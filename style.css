@@ -707,3 +707,8 @@ body { padding-bottom: 170px; }
   cursor: pointer;
 }
 .ed-modal-btns button.ok { background: var(--brand); border-color: var(--brand); color: #fff; }
+
+/* 글씨: 손가락으로 잡기 쉽도록 둘레를 넓게 잡을 수 있게 한다 */
+.item-hit.text-hit::before { content: ''; position: absolute; inset: -14px -10px; }
+.item-hit.text-hit.sel { outline-offset: 4px; }
+.item-hit.text-hit .handle.se { right: -30px; bottom: -30px; z-index: 1; }

@@ -901,13 +901,20 @@ function drawEditorLayer() {
   ed.layer.appendChild(itemsSvg(p));
   p.items.forEach((it, i) => {
     const hit = document.createElement('div');
-    hit.className = 'item-hit';
+    hit.className = 'item-hit' + (it.type === 'text' ? ' text-hit' : '');
     hit.dataset.kind = 'item';
     hit.dataset.i = i;
     setBoxStyle(hit, itemDisplayBox(it, p));
     if (ed.sel?.kind === 'item' && ed.sel.i === i) {
       if (it.type === 'line' || it.type === 'arrow') addLineHandles(hit, it, p);
-      else if (it.type === 'text') hit.classList.add('sel');
+      else if (it.type === 'text') {
+        // 글씨: 오른쪽 아래 손잡이 하나 → 끌면 글자 크기 조절
+        hit.classList.add('sel');
+        const handle = document.createElement('span');
+        handle.className = 'handle se';
+        handle.dataset.h = 'size';
+        hit.appendChild(handle);
+      }
       else addHandles(hit, 'corners');
     }
     ed.layer.appendChild(hit);
@@ -949,7 +956,7 @@ function updateHint() {
   if (ed.sel) {
     const it = selItem();
     msg = it?.type === 'text'
-      ? '글씨를 끌어서 옮기세요. 아래 버튼으로 크기·굵기를 바꾸거나 내용을 고칠 수 있습니다.'
+      ? '끌어서 옮기기 · 오른쪽 아래 손잡이로 크기 조절 · 한 번 더 누르면 내용 고치기'
       : it && (it.type === 'line' || it.type === 'arrow')
         ? '선을 끌면 이동, 양 끝의 손잡이를 끌면 길이·방향을 바꿉니다.'
         : '가운데를 끌면 이동, 모서리 손잡이를 끌면 크기 조절. 빈 곳을 누르면 선택이 풀립니다.';
@@ -1093,7 +1100,8 @@ ed.layer.addEventListener('pointerdown', (e) => {
   if (hit) {
     // 이미 있는 것: 선택하고, 이동 또는 크기 조절 준비
     const kind = hit.dataset.kind, i = Number(hit.dataset.i);
-    if (ed.sel?.kind !== kind || ed.sel.i !== i) {
+    const wasSelected = ed.sel?.kind === kind && ed.sel.i === i;
+    if (!wasSelected) {
       ed.sel = { kind, i };
       const obj = kind === 'mask' ? p.masks[i] : p.items[i];
       toolState.tool = kind === 'mask' ? 'mask' : obj.type;   // 그 종류에 맞는 색 단추를 보여 준다
@@ -1102,7 +1110,13 @@ ed.layer.addEventListener('pointerdown', (e) => {
       drawEditorLayer();
     }
     const obj = kind === 'mask' ? p.masks[i] : p.items[i];
-    drag = { mode: handle ? 'resize' : 'move', corner: handle?.dataset.h, start, orig: JSON.parse(JSON.stringify(obj)), kind, i, moved: false };
+    drag = { mode: handle ? 'resize' : 'move', corner: handle?.dataset.h, start, orig: JSON.parse(JSON.stringify(obj)), kind, i, moved: false, wasSelected };
+    if (kind === 'item' && obj.type === 'text') {
+      // 글자 크기 조절의 기준점: 글씨 왼쪽 위 (화면 기준, pt 단위로 계산)
+      const g = textDisplayGeom(obj, p);
+      drag.anchorPt = { x: g.ax, y: g.ay };
+      drag.dims = g.dims;
+    }
     return;
   }
 
@@ -1146,6 +1160,11 @@ ed.layer.addEventListener('pointermove', (e) => {
     else { b.x = clamp01(b.x + dx); b.y = clamp01(b.y + dy); }
     const A = ptToBase(clamp01(a.x), clamp01(a.y), p.rot), B = ptToBase(clamp01(b.x), clamp01(b.y), p.rot);
     Object.assign(obj, { x1: A.x, y1: A.y, x2: B.x, y2: B.y });
+  } else if (drag.kind === 'item' && o.type === 'text' && drag.mode === 'resize') {
+    // 손잡이를 기준점에서 멀리 끌면 크게, 가까이 끌면 작게 (처음 거리 대비 비율)
+    const dist = (q) => Math.hypot(q.x * drag.dims.w - drag.anchorPt.x, q.y * drag.dims.h - drag.anchorPt.y);
+    const ratio = dist(pt) / Math.max(1, dist(drag.start));
+    obj.size = Math.round(Math.min(96, Math.max(6, o.size * ratio)));
   } else if (drag.kind === 'item' && o.type === 'text') {
     const a = ptToDisplay(o.x, o.y, p.rot);
     const A = ptToBase(clamp01(a.x + dx), clamp01(a.y + dy), p.rot);
@@ -1231,6 +1250,14 @@ function endDrag() {
     }
   } else if (d.moved) {
     ed.changed = true;
+  } else if (d.wasSelected && d.mode === 'move' && d.kind === 'item' && p.items[d.i]?.type === 'text') {
+    // 이미 선택된 글씨를 한 번 더 누름 → 내용 고치기
+    const it = p.items[d.i];
+    askText('글씨 고치기', it.text).then((text) => {
+      if (text !== null && text.trim()) { it.text = text; ed.changed = true; }
+      drawEditorLayer();
+    });
+    return;
   }
   drawEditorLayer();
 }
