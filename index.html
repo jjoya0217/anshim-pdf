@@ -24,7 +24,7 @@
   ">
 
   <title>안심 PDF 도구</title>
-  <link rel="stylesheet" href="style.css?v=15">
+  <link rel="stylesheet" href="style.css?v=16">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -163,6 +163,18 @@
         <div class="ed-layer" id="edLayer"></div>
       </div>
     </div>
+    <!-- 글씨 입력 상자 -->
+    <div class="ed-modal" id="edModal" hidden>
+      <div class="ed-modal-box" role="dialog" aria-labelledby="edModalTitle">
+        <strong id="edModalTitle">글씨 넣기</strong>
+        <textarea id="edText" rows="3" placeholder="넣을 글씨를 입력하세요 (엔터로 줄 바꿈)"></textarea>
+        <div class="ed-modal-btns">
+          <button type="button" id="edCancel">취소</button>
+          <button type="button" id="edOk" class="ok">넣기</button>
+        </div>
+      </div>
+    </div>
+
     <div class="ed-bottom">
       <p class="ed-hint" id="edHint">가릴 곳을 손가락으로 끌어서 상자를 그리세요. 그린 상자를 누르면 선택됩니다.</p>
       <div class="ed-btns">
@@ -178,6 +190,6 @@
 
   <!-- 라이브러리는 모두 이 웹앱 폴더(lib) 안에 들어 있다. 외부 CDN을 쓰지 않는다. -->
   <script src="lib/pdf-lib/pdf-lib.min.js"></script>
-  <script type="module" src="app.js?v=15"></script>
+  <script type="module" src="app.js?v=16"></script>
 </body>
 </html>

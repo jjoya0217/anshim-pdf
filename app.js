@@ -1060,8 +1060,11 @@ ed.props.addEventListener('click', (e) => {
   } else if (act === 'bold') {
     if (it) { it.bold = !it.bold; ed.changed = true; } else toolState.bold = !toolState.bold;
   } else if (act === 'edit' && it) {
-    const text = prompt('글씨 내용을 고치세요. (줄을 바꾸려면 \\n 을 쓰세요)', it.text.replace(/\n/g, '\\n'));
-    if (text !== null && text.trim()) { it.text = text.replace(/\\n/g, '\n'); ed.changed = true; }
+    askText('글씨 고치기', it.text).then((text) => {
+      if (text !== null && text.trim()) { it.text = text; ed.changed = true; }
+      drawEditorLayer();
+    });
+    return;
   } else if (act.startsWith('w')) {
     const w = Number(act.slice(1));
     if (it) { it.width = w; ed.changed = true; }
@@ -1103,13 +1106,20 @@ ed.layer.addEventListener('pointerdown', (e) => {
     return;
   }
 
-  ed.sel = null;
   const tool = toolState.tool;
   if (tool === 'text') {
-    drag = null;
-    addTextAt(start);
+    // 무언가 선택된 상태에서 빈 곳을 누르면 → 선택만 푼다 (입력 상자를 열지 않음)
+    if (ed.sel) {
+      ed.sel = null;
+      drag = null;
+      drawEditorLayer();
+      return;
+    }
+    // 손가락을 뗄 때 입력 상자를 연다 (누르는 도중에 창을 띄우면 휴대폰에서 터치가 꼬인다)
+    drag = { mode: 'tap', start };
     return;
   }
+  ed.sel = null;
   // 빈 곳: 새로 그리기 시작
   drag = { mode: 'draw', tool, start, end: start };
   drawPreview();
@@ -1191,6 +1201,10 @@ function endDrag() {
   drag = null;
   const p = state.pages[ed.pos];
 
+  if (d.mode === 'tap') {
+    addTextAt(d.start);
+    return;
+  }
   if (d.mode === 'draw') {
     const { tool, start, end } = d;
     const color = toolState.color[tool];
@@ -1221,21 +1235,41 @@ function endDrag() {
   drawEditorLayer();
 }
 ed.layer.addEventListener('pointerup', endDrag);
-ed.layer.addEventListener('pointercancel', endDrag);
+ed.layer.addEventListener('pointercancel', () => { if (drag?.mode === 'tap') drag = null; endDrag(); });
 
 // 글씨 넣기: 누른 곳이 글씨 상자의 왼쪽 위가 된다
-function addTextAt(pt) {
-  const text = prompt('넣을 글씨를 입력하세요. (줄을 바꾸려면 \\n 을 쓰세요)');
+async function addTextAt(pt) {
+  const text = await askText('글씨 넣기', '');
   if (text === null || !text.trim()) { drawEditorLayer(); return; }
   const p = state.pages[ed.pos];
   const A = ptToBase(pt.x, pt.y, p.rot);
   p.items.push({
     type: 'text', x: A.x, y: A.y, rot0: p.rot,
-    size: toolState.size, color: toolState.color.text, bold: toolState.bold, text: text.replace(/\\n/g, '\n'),
+    size: toolState.size, color: toolState.color.text, bold: toolState.bold, text,
   });
   ed.sel = { kind: 'item', i: p.items.length - 1 };
   ed.changed = true;
   drawEditorLayer();
+}
+
+// ---- 글씨 입력 상자 (웹앱 안에 직접 만든 창) ----
+//  브라우저 기본 입력 창(prompt) 대신 쓴다: 휴대폰에서 터치가 꼬이지 않고, 엔터로 줄을 바꿀 수 있다.
+const textDlg = { root: $('edModal'), title: $('edModalTitle'), input: $('edText'), ok: $('edOk'), cancel: $('edCancel') };
+function askText(title, initial) {
+  return new Promise((resolve) => {
+    textDlg.title.textContent = title;
+    textDlg.input.value = initial;
+    textDlg.ok.textContent = initial ? '고치기' : '넣기';
+    textDlg.root.hidden = false;
+    setTimeout(() => textDlg.input.focus(), 50);
+    const finish = (value) => {
+      textDlg.root.hidden = true;
+      textDlg.ok.onclick = textDlg.cancel.onclick = null;
+      resolve(value);
+    };
+    textDlg.ok.onclick = () => finish(textDlg.input.value.replace(/\s+$/, ''));
+    textDlg.cancel.onclick = () => finish(null);
+  });
 }
 
 // ---- 아래 버튼들 ----
@@ -1261,6 +1295,10 @@ ed.next.addEventListener('click', () => ed.pos < state.pages.length - 1 && showE
 ed.done.addEventListener('click', closeEditor);
 document.addEventListener('keydown', (e) => {
   if (ed.root.hidden) return;
+  if (!textDlg.root.hidden) {           // 입력 상자가 열려 있으면 상자만 다룬다
+    if (e.key === 'Escape') textDlg.cancel.click();
+    return;
+  }
   if (e.key === 'Escape') closeEditor();
   if ((e.key === 'Delete' || e.key === 'Backspace') && ed.sel) ed.delSel.click();
 });

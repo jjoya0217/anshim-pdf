@@ -660,3 +660,50 @@ body { padding-bottom: 170px; }
   .card { border: 1px solid #ccc; break-inside: avoid; padding: 8pt 10pt; margin-bottom: 8pt; }
   .doc a { color: #000; }
 }
+
+/* ---------- 글씨 입력 상자 ---------- */
+.ed-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 80px 16px 16px;
+}
+.ed-modal[hidden] { display: none; }
+.ed-modal-box {
+  width: 100%;
+  max-width: 420px;
+  background: #fff;
+  color: var(--text);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+}
+.ed-modal-box textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+  font-size: 1rem;          /* 16px 이상: 아이폰에서 입력할 때 화면이 확대되지 않도록 */
+  resize: vertical;
+}
+.ed-modal-box textarea:focus { outline: 2px solid var(--brand); border-color: var(--brand); }
+.ed-modal-btns { display: flex; gap: 8px; }
+.ed-modal-btns button {
+  flex: 1;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #f3f5f7;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ed-modal-btns button.ok { background: var(--brand); border-color: var(--brand); color: #fff; }
