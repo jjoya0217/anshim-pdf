@@ -515,3 +515,21 @@ body { padding-bottom: 170px; }
 .option-btn:disabled { opacity: 0.5; cursor: default; }
 .option-btn strong { font-size: 0.95rem; }
 .option-btn span { font-size: 0.8rem; color: var(--muted); }
+
+/* ---------- 이미지로 저장 ---------- */
+.opt-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+.opt-label { width: 52px; font-size: 0.9rem; font-weight: 600; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  background: var(--surface);
+}
+.chip small { color: var(--muted); font-size: 0.75rem; }
+.chip:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+.chip input { accent-color: var(--brand); margin: 0; }

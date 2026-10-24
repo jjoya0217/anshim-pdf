@@ -62,6 +62,10 @@ const els = {
   saveBtn: $('saveBtn'),
   saveMsg: $('saveMsg'),
   savePanel: $('savePanel'),
+  imgCard: $('imgCard'),
+  imgTarget: $('imgTarget'),
+  imgBtn: $('imgBtn'),
+  imgMsg: $('imgMsg'),
 };
 
 // =====================================================================
@@ -353,6 +357,7 @@ function render() {
   renderFiles();
   renderPages();
   renderSave();
+  renderImgCard();
 }
 
 function renderFiles() {
@@ -611,6 +616,7 @@ function renderToolbar() {
   }
   els.selectAllBtn.textContent =
     n > 0 && n === state.pages.length ? '선택 해제' : '전체 선택';
+  renderImgCard();
 }
 
 // =====================================================================
@@ -1418,6 +1424,200 @@ function showSaveMsg(text, type = 'ok') {
   els.saveMsg.textContent = text;
   els.saveMsg.className = 'msg ' + type;
   els.saveMsg.hidden = !text;
+}
+
+// =====================================================================
+// 5-5. 이미지로 저장 (4단계-①): 선택한 쪽(없으면 전체)을 PNG/JPG로
+// =====================================================================
+//  - 화면에 보이는 모습 그대로: 회전과 가린 영역(개인정보)을 모두 반영한다.
+//  - 한 장이면 그림 파일 하나, 여러 장이면 ZIP 파일 하나로 묶어 내려받는다.
+
+els.imgBtn.addEventListener('click', exportImages);
+
+// 이미지로 저장할 쪽: 선택한 쪽, 없으면 전체 (화면 순서대로)
+function exportTargets() {
+  const chosen = state.pages.filter((p) => selected.has(p.key));
+  return chosen.length ? chosen : state.pages;
+}
+
+function renderImgCard() {
+  const has = state.pages.length > 0;
+  els.imgCard.hidden = !has;
+  if (!has) return;
+  const n = selected.size;
+  els.imgTarget.textContent = n
+    ? `선택한 ${n}쪽을 그림 파일로 저장합니다.`
+    : `선택한 쪽이 없어 전체 ${state.pages.length}쪽을 저장합니다. (위에서 쪽을 누르면 그 쪽만 저장)`;
+  const total = n || state.pages.length;
+  els.imgBtn.textContent = total === 1 ? '이미지로 저장 (1장)' : `이미지로 저장 (${total}장 → ZIP)`;
+}
+
+async function exportImages() {
+  const targets = exportTargets();
+  if (!targets.length) return;
+  const fmt = document.querySelector('input[name="imgFmt"]:checked').value;   // png | jpg
+  const dpi = Number(document.querySelector('input[name="imgDpi"]:checked').value);
+  const base = cleanName(els.nameInput.value || suggestName()).replace(/\.pdf$/, '');
+
+  els.imgBtn.disabled = true;
+  showImgMsg('');
+  try {
+    const files = [];
+    for (const [k, p] of targets.entries()) {
+      els.imgBtn.textContent = `그림 만드는 중… ${k + 1}/${targets.length}`;
+      const order = state.pages.indexOf(p) + 1;            // 화면에 표시된 쪽 번호
+      const bytes = await pageImage(p, fmt, dpi);
+      files.push({ name: `${base}_${order}쪽.${fmt}`, bytes });
+    }
+    const masked = targets.filter((p) => p.masks.length).length;
+    if (files.length === 1) {
+      downloadBlob(files[0].bytes, files[0].name, fmt === 'png' ? 'image/png' : 'image/jpeg');
+      showImgMsg(`저장했습니다: ${files[0].name} (${formatSize(files[0].bytes.length)})`, 'good');
+    } else {
+      const zip = makeZip(files);
+      const zipName = `${base}_이미지${files.length}장.zip`;
+      downloadBlob(zip, zipName, 'application/zip');
+      showImgMsg(`저장했습니다: ${zipName} (${files.length}장 · ${formatSize(zip.length)})`, 'good');
+    }
+    if (masked) {
+      els.imgMsg.textContent += `\n✔ 가린 영역이 있는 ${masked}쪽은 가린 상태로 저장했습니다.`;
+    }
+  } catch (err) {
+    console.error(err);
+    showImgMsg(`그림을 만드는 중 문제가 생겼습니다. 선명도를 '보통'으로 낮춰 보세요. (${err?.message || err})`, 'bad');
+  } finally {
+    els.imgBtn.disabled = false;
+    renderImgCard();
+  }
+}
+
+// 한 쪽을 그림 파일로 (회전 + 가린 영역 반영)
+async function pageImage(p, fmt, dpi) {
+  const file = state.files.find((f) => f.id === p.fileId);
+  const page = await file.pdf.getPage(p.index + 1);
+  const rotation = (page.rotate + p.rot) % 360;
+  const view = page.getViewport({ scale: dpi / 72, rotation });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(view.width);
+  canvas.height = Math.round(view.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvas, viewport: view }).promise;
+
+  // 가린 영역은 화면 기준(돌린 뒤) 좌표로 바꿔서 칠한다
+  for (const m of p.masks) {
+    const r = toDisplay(m, p.rot);
+    ctx.fillStyle = m.color;
+    const x0 = Math.floor(r.x * canvas.width) - 1, y0 = Math.floor(r.y * canvas.height) - 1;
+    const x1 = Math.ceil((r.x + r.w) * canvas.width) + 1, y1 = Math.ceil((r.y + r.h) * canvas.height) + 1;
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+
+  const type = fmt === 'png' ? 'image/png' : 'image/jpeg';
+  const blob = await new Promise((ok) => canvas.toBlob(ok, type, 0.9));
+  canvas.width = canvas.height = 0;
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+function downloadBlob(bytes, fileName, type) {
+  const url = URL.createObjectURL(new Blob([bytes], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function showImgMsg(text, type = 'ok') {
+  els.imgMsg.textContent = text;
+  els.imgMsg.className = 'msg ' + type;
+  els.imgMsg.hidden = !text;
+}
+
+// ---------------------------------------------------------------------
+// 간단한 ZIP 만들기 (압축 없이 묶기만 함)
+//  PNG·JPG는 이미 압축된 형식이라 다시 압축해도 거의 줄지 않는다.
+//  그래서 외부 라이브러리 없이 '묶기'만 하는 작은 코드로 충분하다.
+// ---------------------------------------------------------------------
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function makeZip(files) {
+  const enc = new TextEncoder();
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+
+  for (const f of files) {
+    const name = enc.encode(f.name);      // 한글 파일 이름 (UTF-8 표시를 켠다)
+    const crc = crc32(f.bytes);
+    const size = f.bytes.length;
+
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);  // 파일 머리 표시
+    local.setUint16(4, 20, true);          // 필요한 버전
+    local.setUint16(6, 0x0800, true);      // UTF-8 파일 이름
+    local.setUint16(8, 0, true);           // 압축 안 함
+    local.setUint16(10, dosTime, true);
+    local.setUint16(12, dosDate, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, size, true);
+    local.setUint32(22, size, true);
+    local.setUint16(26, name.length, true);
+    local.setUint16(28, 0, true);
+    chunks.push(new Uint8Array(local.buffer), name, f.bytes);
+
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true);    // 목차 항목 표시
+    cen.setUint16(4, 20, true);
+    cen.setUint16(6, 20, true);
+    cen.setUint16(8, 0x0800, true);
+    cen.setUint16(10, 0, true);
+    cen.setUint16(12, dosTime, true);
+    cen.setUint16(14, dosDate, true);
+    cen.setUint32(16, crc, true);
+    cen.setUint32(20, size, true);
+    cen.setUint32(24, size, true);
+    cen.setUint16(28, name.length, true);
+    cen.setUint32(42, offset, true);       // 이 파일이 시작하는 위치
+    central.push(new Uint8Array(cen.buffer), name);
+
+    offset += 30 + name.length + size;
+  }
+
+  const cenSize = central.reduce((s, c) => s + c.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);      // 목차 끝 표시
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, cenSize, true);
+  end.setUint32(16, offset, true);
+
+  const all = [...chunks, ...central, new Uint8Array(end.buffer)];
+  const out = new Uint8Array(all.reduce((s, c) => s + c.length, 0));
+  let pos = 0;
+  for (const c of all) { out.set(c, pos); pos += c.length; }
+  return out;
 }
 
 // =====================================================================
