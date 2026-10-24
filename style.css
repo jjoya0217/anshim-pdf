@@ -82,7 +82,127 @@ main { padding-top: 20px; padding-bottom: 20px; }
 .hint.ok { color: var(--ok); font-weight: 600; }
 .hint.bad { color: var(--bad); font-weight: 600; }
 
-.soon { color: var(--muted); border-style: dashed; }
+/* ---------- 파일 불러오기 상자 ---------- */
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 28px 16px;
+  border: 2px dashed #9cc9b9;
+  border-radius: var(--radius);
+  background: #fafcfb;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.drop:hover, .drop.over { background: var(--brand-soft); border-color: var(--brand); }
+.drop-main {
+  display: inline-block;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 999px;
+}
+.drop-sub { color: var(--muted); font-size: 0.85rem; }
+
+.msg { margin: 10px 0 0; font-size: 0.93rem; white-space: pre-line; }
+.msg.bad { color: var(--bad); }
+.msg.ok { color: var(--muted); }
+
+/* ---------- 파일 목록 ---------- */
+.row-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.row-between h2 { margin: 0; }
+
+.btn-ghost {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--bad); color: var(--bad); }
+
+.total { margin: 8px 0; font-weight: 600; }
+
+.file-list { list-style: none; margin: 0; padding: 0; }
+.file-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.93rem;
+}
+.file-tag {
+  flex: none;
+  width: 26px; height: 26px;
+  border-radius: 6px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.8rem;
+  display: grid;
+  place-items: center;
+}
+.file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.file-meta { flex: none; color: var(--muted); font-size: 0.85rem; }
+
+/* ---------- 페이지 미리보기 ---------- */
+.page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 12px;
+}
+.page {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1.414;           /* 그리기 전에는 A4 비율 자리만 잡아 둔다 */
+  display: grid;
+  place-items: center;
+  background: #eef0f3;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.thumb canvas {
+  max-width: 100%;
+  max-height: 100%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+.page figcaption {
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.page figcaption .file-tag { width: 18px; height: 18px; font-size: 0.7rem; border-radius: 4px; }
+
+/* 파일 구분 색상 (A, B, C ...) */
+.c0 { background: #1f6f5c; }
+.c1 { background: #3b62b0; }
+.c2 { background: #b0662a; }
+.c3 { background: #8a3fa6; }
+.c4 { background: #b03b55; }
+.c5 { background: #4b7f2a; }
+
+.check-card { font-size: 0.93rem; }
 
 .foot {
   color: var(--muted);

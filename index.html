@@ -40,19 +40,43 @@
       <p>불러온 PDF와 이미지는 이 브라우저 안에서만 처리되고, 어떤 서버에도 전송·저장되지 않습니다.</p>
     </section>
 
+    <!-- 1. 파일 불러오기 -->
     <section class="card">
-      <h2>준비 상태 점검</h2>
+      <h2>PDF 불러오기</h2>
+      <!-- label로 감싸면 상자 어디를 눌러도 파일 선택 창이 열린다 -->
+      <label class="drop" id="drop">
+        <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
+        <span class="drop-main">PDF 파일 선택</span>
+        <span class="drop-sub">여러 개를 한 번에 고를 수 있습니다 · PC에서는 여기로 끌어다 놓아도 됩니다</span>
+      </label>
+      <p class="msg" id="msg" hidden></p>
+    </section>
+
+    <!-- 2. 불러온 파일 목록 -->
+    <section class="card" id="filesCard" hidden>
+      <div class="row-between">
+        <h2>불러온 파일</h2>
+        <button type="button" class="btn-ghost" id="clearBtn">모두 지우기</button>
+      </div>
+      <p class="total" id="total"></p>
+      <ul class="file-list" id="fileList"></ul>
+    </section>
+
+    <!-- 3. 페이지 미리보기 -->
+    <section class="card" id="pagesCard" hidden>
+      <h2>페이지 미리보기</h2>
+      <div class="page-grid" id="pageGrid"></div>
+    </section>
+
+    <!-- 안심 점검 -->
+    <section class="card check-card">
+      <h2>안심 점검</h2>
       <ul class="checks" id="checks">
         <li data-key="pdfjs"><span class="dot"></span>PDF 미리보기 도구 (PDF.js)</li>
         <li data-key="pdflib"><span class="dot"></span>PDF 편집 도구 (pdf-lib)</li>
         <li data-key="csp"><span class="dot"></span>외부 통신 차단 정책</li>
       </ul>
       <p class="hint" id="summary">점검 중…</p>
-    </section>
-
-    <section class="card soon">
-      <h2>PDF 불러오기</h2>
-      <p>다음 단계에서 이곳에 파일을 불러오는 기능이 추가됩니다.</p>
     </section>
   </main>
 
