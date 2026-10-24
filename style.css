@@ -209,3 +209,13 @@ main { padding-top: 20px; padding-bottom: 20px; }
   font-size: 0.85rem;
   padding-bottom: 32px;
 }
+
+.badge {
+  display: inline-block;
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-radius: 4px;
+  padding: 0 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}

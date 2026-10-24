@@ -109,12 +109,23 @@ async function addFiles(fileList) {
     try {
       // (1) 파일 내용을 메모리로 읽는다
       const buffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
+      let bytes = new Uint8Array(buffer);
 
-      // PDF인지 확인: 파일 이름이 아니라 내용의 첫머리('%PDF')를 본다.
-      // (휴대폰에서는 파일 이름에 .pdf가 빠진 채 전달되는 경우가 있다)
-      if (!looksLikePdf(bytes)) {
-        problems.push(`${file.name}: PDF 파일이 아닙니다.`);
+      // 파일 종류 확인: 파일 이름이 아니라 내용의 첫머리를 본다.
+      // (휴대폰에서는 파일 이름에 확장자가 빠진 채 전달되는 경우가 있다)
+      const kind = detectKind(bytes);
+      let fromImage = false;
+
+      if (kind === 'heic') {
+        problems.push(`${file.name}: 아이폰 사진 형식(HEIC)은 열 수 없습니다. JPG로 바꾼 뒤 불러와 주세요.`);
+        continue;
+      }
+      if (kind === 'jpg' || kind === 'png') {
+        showMsg(`${file.name} 사진을 PDF로 바꾸는 중…`);
+        bytes = await imageToPdf(file);       // 사진 → 1쪽짜리 PDF
+        fromImage = true;
+      } else if (kind !== 'pdf') {
+        problems.push(`${file.name}: PDF나 사진(JPG·PNG) 파일이 아닙니다.`);
         continue;
       }
 
@@ -128,7 +139,9 @@ async function addFiles(fileList) {
         label: fileLabel(id),
         colorClass: 'c' + (id % 6),
         name: file.name,
-        size: file.size,
+        size: bytes.length,        // 사진은 변환 후 PDF 크기 (10MB 판정에 쓰이는 실제 크기)
+        originalSize: file.size,
+        fromImage,
         bytes,
         pdf,
         pageCount: pdf.numPages,
@@ -151,10 +164,77 @@ async function addFiles(fileList) {
   }
 }
 
-// 파일 앞부분 1024바이트 안에 '%PDF' 표시가 있는지 확인한다
-function looksLikePdf(bytes) {
-  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
-  return head.includes('%PDF');
+// 파일 종류를 내용의 첫머리(파일 서명)로 알아낸다
+function detectKind(bytes) {
+  const b = bytes;
+  if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'jpg';            // JPG
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'png'; // PNG
+  const head = new TextDecoder('latin1').decode(b.subarray(0, 1024));
+  if (head.includes('%PDF')) return 'pdf';
+  if (/^....ftyp(heic|heix|hevc|mif1|msf1)/.test(head)) return 'heic';              // 아이폰 사진
+  return 'unknown';
+}
+
+// =====================================================================
+// 4-1. 사진 → PDF 변환 (1단계-③)
+// =====================================================================
+// 처리 순서
+//  1) 사진을 그림으로 읽는다. 휴대폰 사진의 회전 정보도 반영한다.
+//  2) A4에 인쇄하기 충분한 크기(긴 변 2339픽셀 ≒ 200dpi)를 넘으면 줄인다.
+//  3) 캔버스에 다시 그려 JPG로 저장한다.
+//     → 이 과정에서 촬영 위치(GPS)·기기 정보 같은 숨은 정보가 모두 사라진다.
+//  4) pdf-lib로 A4 페이지 한 장짜리 PDF를 만들고, 사진을 비율 그대로 페이지에 맞춘다.
+
+const A4 = { w: 595.28, h: 841.89 };   // A4 크기 (PDF 단위: 1/72인치)
+const MAX_SIDE = 2339;                  // A4 긴 변을 200dpi로 인쇄할 때의 픽셀 수
+const JPG_QUALITY = 0.88;
+
+async function imageToPdf(file) {
+  // 1) 사진 읽기 (회전 정보 반영)
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+
+  // 2) 크기 줄이기 (이미 작으면 그대로)
+  const ratio = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width * ratio);
+  const h = Math.round(bitmap.height * ratio);
+
+  // 3) 캔버스에 다시 그려 JPG로 만들기
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';            // 투명한 PNG는 흰 바탕으로
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+
+  const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/jpeg', JPG_QUALITY));
+  const jpgBytes = new Uint8Array(await blob.arrayBuffer());
+
+  // 4) A4 PDF 만들기 (가로 사진이면 가로 페이지)
+  const { PDFDocument } = window.PDFLib;
+  const doc = await PDFDocument.create();
+  const landscape = w > h;
+  const pageW = landscape ? A4.h : A4.w;
+  const pageH = landscape ? A4.w : A4.h;
+  const page = doc.addPage([pageW, pageH]);
+
+  const image = await doc.embedJpg(jpgBytes);
+  const scale = Math.min(pageW / w, pageH / h);   // 비율을 유지하며 페이지 안에 꼭 맞추기
+  const drawW = w * scale;
+  const drawH = h * scale;
+  page.drawImage(image, {
+    x: (pageW - drawW) / 2,                       // 가운데 정렬
+    y: (pageH - drawH) / 2,
+    width: drawW,
+    height: drawH,
+  });
+
+  // 만든 프로그램 이름 같은 PDF 속성 정보도 비워 둔다
+  doc.setProducer('');
+  doc.setCreator('');
+
+  return await doc.save();
 }
 
 // PDF.js 오류를 이해하기 쉬운 말로 바꾼다
@@ -201,7 +281,7 @@ function renderFiles() {
     li.innerHTML = `
       <span class="file-tag ${f.colorClass}">${f.label}</span>
       <span class="file-name"></span>
-      <span class="file-meta">${f.pageCount}쪽 · ${formatSize(f.size)}</span>`;
+      <span class="file-meta">${f.fromImage ? '<span class="badge">사진→PDF</span> ' : ''}${f.pageCount}쪽 · ${formatSize(f.size)}</span>`;
     li.querySelector('.file-name').textContent = f.name;   // 파일 이름은 글자 그대로 넣는다(안전)
     els.fileList.appendChild(li);
   }

@@ -24,7 +24,7 @@
   ">
 
   <title>안심 PDF 도구</title>
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
   <header class="top">
@@ -42,12 +42,12 @@
 
     <!-- 1. 파일 불러오기 -->
     <section class="card">
-      <h2>PDF 불러오기</h2>
+      <h2>파일 불러오기</h2>
       <!-- label로 감싸면 상자 어디를 눌러도 파일 선택 창이 열린다 -->
       <label class="drop" id="drop">
-        <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
-        <span class="drop-main">PDF 파일 선택</span>
-        <span class="drop-sub">여러 개를 한 번에 고를 수 있습니다 · PC에서는 여기로 끌어다 놓아도 됩니다</span>
+        <input type="file" id="fileInput" accept="application/pdf,.pdf,image/jpeg,image/png,.jpg,.jpeg,.png" multiple hidden>
+        <span class="drop-main">PDF · 사진 선택</span>
+        <span class="drop-sub">PDF와 사진(JPG·PNG)을 여러 개 고를 수 있습니다 · 사진은 A4 PDF로 바뀝니다</span>
       </label>
       <p class="msg" id="msg" hidden></p>
     </section>
@@ -86,6 +86,6 @@
 
   <!-- 라이브러리는 모두 이 웹앱 폴더(lib) 안에 들어 있다. 외부 CDN을 쓰지 않는다. -->
   <script src="lib/pdf-lib/pdf-lib.min.js"></script>
-  <script type="module" src="app.js?v=3"></script>
+  <script type="module" src="app.js?v=4"></script>
 </body>
 </html>
