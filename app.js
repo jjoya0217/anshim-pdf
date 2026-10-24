@@ -106,16 +106,17 @@ async function addFiles(fileList) {
 
   // 고른 순서대로 하나씩 처리한다
   for (const file of picked) {
-    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-    if (!isPdf) {
-      problems.push(`${file.name}: PDF 파일이 아닙니다.`);
-      continue;
-    }
-
     try {
       // (1) 파일 내용을 메모리로 읽는다
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
+
+      // PDF인지 확인: 파일 이름이 아니라 내용의 첫머리('%PDF')를 본다.
+      // (휴대폰에서는 파일 이름에 .pdf가 빠진 채 전달되는 경우가 있다)
+      if (!looksLikePdf(bytes)) {
+        problems.push(`${file.name}: PDF 파일이 아닙니다.`);
+        continue;
+      }
 
       // (2) PDF.js로 연다.
       //     PDF.js는 넘겨받은 데이터를 워커로 옮기며 비워 버리므로 복사본을 넘긴다.
@@ -148,6 +149,12 @@ async function addFiles(fileList) {
   } else {
     showMsg(added ? `${added}개 파일을 불러왔습니다.` : '');
   }
+}
+
+// 파일 앞부분 1024바이트 안에 '%PDF' 표시가 있는지 확인한다
+function looksLikePdf(bytes) {
+  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
+  return head.includes('%PDF');
 }
 
 // PDF.js 오류를 이해하기 쉬운 말로 바꾼다
