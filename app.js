@@ -55,6 +55,10 @@ const els = {
   selectAllBtn: $('selectAllBtn'),
   toolbar: $('toolbar'),
   selCount: $('selCount'),
+  saveCard: $('saveCard'),
+  nameInput: $('nameInput'),
+  saveBtn: $('saveBtn'),
+  saveMsg: $('saveMsg'),
 };
 
 // =====================================================================
@@ -345,6 +349,7 @@ function usedPages(f) {
 function render() {
   renderFiles();
   renderPages();
+  renderSave();
 }
 
 function renderFiles() {
@@ -593,6 +598,124 @@ function renderToolbar() {
   }
   els.selectAllBtn.textContent =
     n > 0 && n === state.pages.length ? '선택 해제' : '전체 선택';
+}
+
+// =====================================================================
+// 5-2. 저장 (1단계-⑤): 파일명 지정 → 새 PDF 만들기 → 내려받기
+// =====================================================================
+
+const TARGET_BYTES = 10_000_000;   // 공문 첨부 기준: 10MB 미만 (실제 바이트 수로 판정)
+let nameTouched = false;           // 사용자가 파일 이름을 직접 고쳤는지
+
+els.nameInput.addEventListener('input', () => { nameTouched = true; });
+els.saveBtn.addEventListener('click', savePdf);
+
+// 파일 이름 추천: 파일이 하나면 '원래이름_정리', 여러 개면 '첫파일이름_외N_병합'
+function suggestName() {
+  const base = (state.files[0]?.name || '문서').replace(/\.[^.]+$/, '');
+  if (state.files.length === 1) return `${base}_정리`;
+  return `${base}_외${state.files.length - 1}_병합`;
+}
+
+// 저장 카드 보이기 + (사용자가 고치지 않았다면) 추천 이름 채우기
+function renderSave() {
+  const has = state.pages.length > 0;
+  els.saveCard.hidden = !has;
+  if (!has) { nameTouched = false; return; }
+  if (!nameTouched) els.nameInput.value = suggestName();
+}
+
+// 파일 이름 다듬기: 쓸 수 없는 글자 → _, 끝의 .pdf 중복 제거, 너무 길면 자르기
+function cleanName(raw) {
+  let name = raw.trim()
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+    .replace(/(\.pdf)+$/i, '')
+    .replace(/^\.+/, '')
+    .trim();
+  if (!name) name = suggestName();
+  return name.slice(0, 100) + '.pdf';
+}
+
+async function savePdf() {
+  if (!state.pages.length) return;
+  const fileName = cleanName(els.nameInput.value);
+  els.nameInput.value = fileName.replace(/\.pdf$/, '');
+
+  els.saveBtn.disabled = true;
+  els.saveBtn.textContent = 'PDF 만드는 중…';
+  showSaveMsg('');
+
+  try {
+    const bytes = await buildPdf(fileName);
+    download(bytes, fileName);
+
+    // 결과 안내: 10MB 기준과 비교
+    const size = formatSize(bytes.length);
+    if (bytes.length < TARGET_BYTES) {
+      showSaveMsg(`저장했습니다: ${fileName} (${state.pages.length}쪽 · ${size})\n공문 첨부 기준(10MB 미만)을 만족합니다.`, 'good');
+    } else {
+      showSaveMsg(`저장했습니다: ${fileName} (${state.pages.length}쪽 · ${size})\n공문 첨부 기준 10MB를 넘습니다. 용량 줄이기 기능은 다음 단계에서 추가됩니다.`, 'warn');
+    }
+  } catch (err) {
+    console.error(err);
+    showSaveMsg('PDF를 만드는 중 문제가 생겼습니다. 파일 하나씩 저장해 보거나, 문제 파일을 알려 주세요.', 'bad');
+  } finally {
+    els.saveBtn.disabled = false;
+    els.saveBtn.textContent = 'PDF로 저장';
+  }
+}
+
+// 화면의 페이지 순서·회전대로 새 PDF를 만든다 (pdf-lib)
+async function buildPdf(fileName) {
+  const { PDFDocument, degrees } = window.PDFLib;
+  const out = await PDFDocument.create();
+
+  // 1) 파일마다 필요한 페이지 번호를 모아 한 번에 복사한다
+  //    (같은 파일의 글꼴·이미지를 여러 번 복사하지 않아 용량이 덜 늘어난다)
+  const copied = new Map();   // '파일id:페이지번호' → 복사된 페이지
+  for (const file of state.files) {
+    const indices = state.pages.filter((p) => p.fileId === file.id).map((p) => p.index);
+    if (!indices.length) continue;
+    const src = await PDFDocument.load(file.bytes);
+    const pages = await out.copyPages(src, indices);
+    indices.forEach((idx, i) => copied.set(`${file.id}:${idx}`, pages[i]));
+  }
+
+  // 2) 화면 순서대로 붙이고, 사용자가 돌린 각도를 더한다
+  for (const p of state.pages) {
+    const page = copied.get(p.key);
+    if (p.rot) page.setRotation(degrees((page.getRotation().angle + p.rot) % 360));
+    out.addPage(page);
+  }
+
+  // 3) PDF 속성 정보 정리: 제목만 파일 이름으로, 나머지(작성자·프로그램 등)는 비운다
+  out.setTitle(fileName.replace(/\.pdf$/, ''));
+  out.setAuthor('');
+  out.setSubject('');
+  out.setKeywords([]);
+  out.setCreator('');
+  out.setProducer('');
+
+  return await out.save({ useObjectStreams: true });
+}
+
+// 만든 PDF를 사용자 기기에 내려받게 한다 (서버를 거치지 않는다)
+function download(bytes, fileName) {
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);   // 잠시 뒤 메모리 정리
+}
+
+function showSaveMsg(text, type = 'ok') {
+  els.saveMsg.textContent = text;
+  els.saveMsg.className = 'msg ' + type;
+  els.saveMsg.hidden = !text;
 }
 
 // =====================================================================

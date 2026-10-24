@@ -322,3 +322,43 @@ main { padding-top: 20px; padding-bottom: 20px; }
 
 /* 도구 막대가 마지막 내용을 가리지 않도록 아래 여백 */
 body { padding-bottom: 120px; }
+
+/* ---------- 저장 ---------- */
+.field-label { display: block; font-size: 0.9rem; font-weight: 600; margin-bottom: 6px; }
+.name-row {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.name-row:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.name-row input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  padding: 12px;
+  font: inherit;
+  font-size: 1rem;      /* 16px 미만이면 아이폰에서 입력할 때 화면이 확대된다 */
+  background: transparent;
+  color: var(--text);
+}
+.name-row .ext { padding: 0 12px; color: var(--muted); background: #f3f5f7; align-self: stretch; display: grid; place-items: center; }
+.btn-primary {
+  width: 100%;
+  margin-top: 4px;
+  padding: 14px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--brand);
+  color: #fff;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.btn-primary:disabled { opacity: 0.6; cursor: default; }
+.msg.warn { color: #9a5b00; font-weight: 600; }
+.msg.good { color: var(--ok); font-weight: 600; }
