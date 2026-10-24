@@ -1022,7 +1022,8 @@ function renderProps() {
     const w = selItem()?.width ?? toolState.width;
     for (const [val, label] of WIDTHS) add(label, 'w' + val, Number(val) === w);
   }
-  ed.props.hidden = ed.props.childElementCount === 0;
+  // 줄이 생겼다 없어졌다 하면 페이지가 위아래로 움직이므로, 자리는 늘 비워 두고 보이기만 바꾼다
+  ed.props.classList.toggle('empty', ed.props.childElementCount === 0);
 }
 
 ed.tools.addEventListener('click', (e) => {
@@ -2188,3 +2189,40 @@ async function runChecks() {
 }
 
 runChecks();
+
+// =====================================================================
+// 7. 인터넷 없이 쓰기 (5단계): 프로그램 파일을 브라우저에 보관
+// =====================================================================
+//  - sw.js(서비스 워커)가 웹앱 프로그램 파일만 보관한다. 작업한 PDF는 보관하지 않는다.
+//  - 안심 점검에 준비 상태를 보여 준다.
+async function setupOffline() {
+  const label = $('offlineLabel');
+  const li = document.querySelector('#checks li[data-key="offline"]');
+  if (!('serviceWorker' in navigator)) {
+    label.textContent = '인터넷 없이 사용: 이 브라우저는 지원하지 않음';
+    return;
+  }
+  try {
+    await navigator.serviceWorker.register('sw.js');
+    const reg = await navigator.serviceWorker.ready;
+    let tries = 0;
+    const ask = () => reg.active?.postMessage('status');
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type !== 'status') return;
+      if (e.data.ready) {
+        li.classList.remove('bad');
+        li.classList.add('ok');
+        label.textContent = '인터넷 없이 사용 준비 완료';
+      } else if (++tries < 40) {
+        label.textContent = '인터넷 없이 사용 준비 중… (필요한 파일 보관 중)';
+        setTimeout(ask, 3000);
+      } else {
+        label.textContent = '인터넷 없이 사용: 아직 준비 중 (다음 접속 때 이어서)';
+      }
+    });
+    ask();
+  } catch {
+    label.textContent = '인터넷 없이 사용: 준비하지 못함 (일반 사용은 문제없음)';
+  }
+}
+setupOffline();
