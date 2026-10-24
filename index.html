@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!--
+    [보안 핵심] 외부 통신 차단 정책 (CSP)
+    - 'self' = 이 웹앱과 같은 주소에서 온 파일만 허용
+    - 다른 사이트로 데이터를 보내거나, 외부 코드를 불러오는 것을 브라우저가 막는다
+    - blob:, data: = 사용자 컴퓨터 메모리 안에서 만든 미리보기 이미지·작업 파일
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' 'wasm-unsafe-eval';
+    style-src 'self';
+    img-src 'self' blob: data:;
+    font-src 'self';
+    worker-src 'self' blob:;
+    connect-src 'self';
+    object-src 'none';
+    base-uri 'none';
+    form-action 'none';
+  ">
+
+  <title>안심 PDF 도구</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <h1>안심 PDF 도구</h1>
+      <p class="sub">학교 업무용 PDF 병합 · 편집 · 개인정보 가리기 · 용량 줄이기</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="notice">
+      <strong>파일은 이 컴퓨터 밖으로 나가지 않습니다.</strong>
+      <p>불러온 PDF와 이미지는 이 브라우저 안에서만 처리되고, 어떤 서버에도 전송·저장되지 않습니다.</p>
+    </section>
+
+    <section class="card">
+      <h2>준비 상태 점검</h2>
+      <ul class="checks" id="checks">
+        <li data-key="pdfjs"><span class="dot"></span>PDF 미리보기 도구 (PDF.js)</li>
+        <li data-key="pdflib"><span class="dot"></span>PDF 편집 도구 (pdf-lib)</li>
+        <li data-key="csp"><span class="dot"></span>외부 통신 차단 정책</li>
+      </ul>
+      <p class="hint" id="summary">점검 중…</p>
+    </section>
+
+    <section class="card soon">
+      <h2>PDF 불러오기</h2>
+      <p>다음 단계에서 이곳에 파일을 불러오는 기능이 추가됩니다.</p>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    안심 PDF 도구 · 1단계 개발 중
+  </footer>
+
+  <!-- 라이브러리는 모두 이 웹앱 폴더(lib) 안에 들어 있다. 외부 CDN을 쓰지 않는다. -->
+  <script src="lib/pdf-lib/pdf-lib.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

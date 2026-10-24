@@ -1,0 +1,91 @@
+/* 안심 PDF 도구 - 기본 화면 스타일 */
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1d2330;
+  --muted: #5d6676;
+  --line: #dfe3ea;
+  --brand: #1f6f5c;      /* 안심(초록 계열) */
+  --brand-soft: #e3f1ec;
+  --ok: #1f8a5b;
+  --bad: #c8412f;
+  --wait: #a0a8b6;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+.wrap {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.top {
+  background: var(--brand);
+  color: #fff;
+  padding: 24px 0 20px;
+}
+.top h1 { margin: 0; font-size: 1.6rem; }
+.top .sub { margin: 4px 0 0; opacity: 0.85; font-size: 0.95rem; }
+
+main { padding-top: 20px; padding-bottom: 20px; }
+
+.notice {
+  background: var(--brand-soft);
+  border: 1px solid #b9dccf;
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.notice p { margin: 4px 0 0; color: var(--muted); font-size: 0.93rem; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.card h2 { margin: 0 0 10px; font-size: 1.1rem; }
+
+.checks { list-style: none; margin: 0; padding: 0; }
+.checks li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.checks li:last-child { border-bottom: 0; }
+
+.dot {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--wait);
+  flex: none;
+}
+.checks li.ok .dot { background: var(--ok); }
+.checks li.bad .dot { background: var(--bad); }
+
+.hint { margin: 10px 0 0; color: var(--muted); font-size: 0.93rem; }
+.hint.ok { color: var(--ok); font-weight: 600; }
+.hint.bad { color: var(--bad); font-weight: 600; }
+
+.soon { color: var(--muted); border-style: dashed; }
+
+.foot {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding-bottom: 32px;
+}
