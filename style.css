@@ -492,3 +492,26 @@ body { padding-bottom: 170px; }
 .handle.ne::before { inset: -10px -10px 0 0; }
 .handle.sw::before { inset: 0 0 -10px -10px; }
 .handle.se::before { inset: 0 -10px -10px 0; }
+
+/* ---------- 저장 대안 버튼 (압축 실패 시, 나눠서 저장) ---------- */
+.save-panel { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.option-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.option-btn:hover:not(:disabled) { background: var(--brand-soft); }
+.option-btn:disabled { opacity: 0.5; cursor: default; }
+.option-btn strong { font-size: 0.95rem; }
+.option-btn span { font-size: 0.8rem; color: var(--muted); }

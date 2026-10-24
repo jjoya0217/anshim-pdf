@@ -61,6 +61,7 @@ const els = {
   nameInput: $('nameInput'),
   saveBtn: $('saveBtn'),
   saveMsg: $('saveMsg'),
+  savePanel: $('savePanel'),
 };
 
 // =====================================================================
@@ -927,114 +928,333 @@ function cleanName(raw) {
   return name.slice(0, 100) + '.pdf';
 }
 
+// ---------------------------------------------------------------------
+// 저장 흐름 (3단계: 10MB 미만 자동 압축)
+//  ① 원본 그대로 만들어 본다 → 10MB 미만이면 끝
+//  ② 아니면 사진·스캔이 있는 페이지만 단계적으로 화질을 낮춘다 (1단계 → 2단계)
+//  ③ 그래도 안 되면 원인(용량 큰 쪽)과 대안(더 낮추기·나눠서 저장·그대로 저장)을 보여 준다
+// ---------------------------------------------------------------------
+
+// 압축 단계: dpi = 그림의 선명도, q = JPG 품질(0~1)
+const LEVELS = [
+  null,                                   // 0단계: 원본 그대로
+  { dpi: 150, q: 0.80, name: '1단계' },   // 화질 차이 거의 없음
+  { dpi: 120, q: 0.65, name: '2단계' },   // 확대하면 조금 흐림
+  { dpi: 100, q: 0.50, name: '3단계' },   // 눈에 띄게 흐림 → 사용자 확인 후
+];
+const AUTO_MAX_LEVEL = 2;          // 자동으로는 2단계까지만
+const HEAVY_BYTES = 120_000;       // 사진·스캔 그림이 이보다 크면 '압축 대상' 페이지
+const RASTER_DEFAULT = { dpi: 150, q: 0.85 };   // 가린 쪽·편집 제한 쪽을 그림으로 바꿀 때
+
+// 한 번 저장하는 동안 쓰는 임시 기억 장소 (저장이 끝나면 비운다)
+let session = null;
+function newSession(fileName, pages) {
+  return {
+    fileName,
+    pages: pages.map((p) => ({ ...p, masks: p.masks.map((m) => ({ ...m })) })), // 저장 시점 모습 고정
+    srcs: new Map(),     // 파일id → pdf-lib 문서 (편집 제한이면 null)
+    imgBytes: new Map(), // 페이지 key → 그 페이지 속 그림 용량
+    jpgs: new Map(),     // 그림으로 바꾼 결과 기억 (같은 설정이면 다시 그리지 않음)
+    best: null,          // 지금까지 만든 결과 중 가장 작은 것
+    firstSize: 0,        // 원본 그대로 만들었을 때 크기
+  };
+}
+
 async function savePdf() {
   if (!state.pages.length) return;
   const fileName = cleanName(els.nameInput.value);
   els.nameInput.value = fileName.replace(/\.pdf$/, '');
-
-  els.saveBtn.disabled = true;
-  els.saveBtn.textContent = 'PDF 만드는 중…';
+  session = newSession(fileName, state.pages);
+  hidePanel();
   showSaveMsg('');
+  await busy(async () => {
+    await tryLevels(0, AUTO_MAX_LEVEL);
+  });
+}
 
-  try {
-    const { bytes, imagedFiles, redacted } = await buildPdf(fileName, (done, total) => {
-      els.saveBtn.textContent = `PDF 만드는 중… ${done}/${total}쪽`;
+// from~to 단계를 차례로 시도하고, 10MB 미만이 되면 바로 내려받는다
+async function tryLevels(from, to) {
+  const s = session;
+  for (let lv = from; lv <= to; lv++) {
+    const label = lv === 0 ? 'PDF 만드는 중' : `용량 줄이는 중 (${LEVELS[lv].name})`;
+    const res = await buildPdf(s.pages, s.fileName, lv, (done, total) => {
+      els.saveBtn.textContent = `${label}… ${done}/${total}쪽`;
     });
+    if (lv === 0) s.firstSize = res.bytes.length;
+    if (!s.best || res.bytes.length < s.best.bytes.length) s.best = res;
 
-    // 가린 쪽이 있으면 내려받기 전에 실제로 지워졌는지 검사한다
-    let check = null;
-    if (redacted.length) {
-      els.saveBtn.textContent = '가린 내용이 지워졌는지 검사하는 중…';
-      check = await verifyRedaction(bytes, redacted);
-      if (!check.ok) {
-        // 이론상 일어나면 안 되는 상황: 파일을 내려주지 않는다
-        showSaveMsg('가린 쪽에서 글자 정보가 발견되어 저장을 멈췄습니다. 안전을 위해 파일을 만들지 않았습니다.', 'bad');
-        return;
-      }
+    if (res.bytes.length < TARGET_BYTES) {
+      await finishDownload(res, s.fileName);
+      return;
     }
-    download(bytes, fileName);
+    // 이번 단계에서 바꿀 수 있는 페이지가 없으면 더 낮춰도 소용없다
+    if (lv > 0 && res.compressedCount === 0 && !res.rasterCount) break;
+  }
+  showOptions();
+}
 
-    // 결과 안내: 10MB 기준과 비교
-    const lines = [`저장했습니다: ${fileName} (${state.pages.length}쪽 · ${formatSize(bytes.length)})`];
-    let type = 'good';
-    if (bytes.length < TARGET_BYTES) {
-      lines.push('공문 첨부 기준(10MB 미만)을 만족합니다.');
-    } else {
-      lines.push('공문 첨부 기준 10MB를 넘습니다. 용량 줄이기 기능은 다음 단계에서 추가됩니다.');
+// 가림 검증 → 내려받기 → 결과 안내
+async function finishDownload(res, fileName) {
+  const check = await checkRedaction(res);
+  if (!check) return;
+  download(res.bytes, fileName);
+  const lines = [`저장했습니다: ${fileName} (${res.pageCount}쪽 · ${formatSize(res.bytes.length)})`];
+  let type = 'good';
+  if (res.bytes.length < TARGET_BYTES) {
+    lines.push('공문 첨부 기준(10MB 미만)을 만족합니다.');
+  } else {
+    lines.push('※ 10MB를 넘는 상태로 저장했습니다. 공문 첨부 시 용량을 확인해 주세요.');
+    type = 'warn';
+  }
+  if (res.level > 0) {
+    lines.push(`용량 줄이기 ${LEVELS[res.level].name} 적용: ${formatSize(session.firstSize)} → ${formatSize(res.bytes.length)} (사진·스캔 ${res.compressedCount}쪽 화질 조정)`);
+  }
+  type = addCommonNotes(lines, res, check, type);
+  hidePanel();
+  showSaveMsg(lines.join('\n'), type);
+}
+
+// 가린 쪽이 있으면 내려받기 전에 실제로 지워졌는지 검사한다
+async function checkRedaction(res) {
+  if (!res.redacted.length) return { ok: true, elsewhere: [], none: true };
+  els.saveBtn.textContent = '가린 내용이 지워졌는지 검사하는 중…';
+  const check = await verifyRedaction(res.bytes, res.redacted);
+  if (!check.ok) {
+    // 이론상 일어나면 안 되는 상황: 파일을 내려주지 않는다
+    showSaveMsg('가린 쪽에서 글자 정보가 발견되어 저장을 멈췄습니다. 안전을 위해 파일을 만들지 않았습니다.', 'bad');
+    return null;
+  }
+  return check;
+}
+
+function addCommonNotes(lines, res, check, type) {
+  if (check && !check.none) {
+    lines.push(`✔ 개인정보 실제 제거 확인: 가린 ${res.redacted.length}쪽은 그림으로 바뀌어 가린 곳의 글자가 파일에 남아 있지 않습니다.`);
+    for (const e of check.elsewhere.slice(0, 5)) {
+      const shown = e.text.length > 30 ? e.text.slice(0, 30) + '…' : e.text;
+      lines.push(`⚠ 가린 내용 "${shown}"이(가) ${e.pages.join(', ')}쪽에 그대로 남아 있습니다. 그 쪽도 가려야 하는지 확인해 주세요.`);
       type = 'warn';
     }
-    if (check) {
-      lines.push(`✔ 개인정보 실제 제거 확인: 가린 ${redacted.length}쪽은 그림으로 바뀌어 가린 곳의 글자가 파일에 남아 있지 않습니다.`);
-      for (const e of check.elsewhere.slice(0, 5)) {
-        const shown = e.text.length > 30 ? e.text.slice(0, 30) + '…' : e.text;
-        lines.push(`⚠ 가린 내용 "${shown}"이(가) ${e.pages.join(', ')}쪽에 그대로 남아 있습니다. 그 쪽도 가려야 하는지 확인해 주세요.`);
-        type = 'warn';
-      }
-    }
-    if (imagedFiles.length) {
-      lines.push(`※ 편집 제한이 걸린 파일(${imagedFiles.join(', ')})은 페이지를 그림으로 바꿔 넣었습니다. 해당 페이지는 글자 선택·검색이 되지 않습니다.`);
-    }
-    showSaveMsg(lines.join('\n'), type);
+  }
+  if (res.imagedFiles.length) {
+    lines.push(`※ 편집 제한이 걸린 파일(${res.imagedFiles.join(', ')})은 페이지를 그림으로 바꿔 넣었습니다. 해당 페이지는 글자 선택·검색이 되지 않습니다.`);
+  }
+  if (res.compressedCount) {
+    lines.push('※ 화질을 조정한 쪽은 그림이 되어 글자 선택·검색이 되지 않습니다.');
+  }
+  return type;
+}
+
+// 버튼을 '작업 중'으로 바꿔 두고 일을 한 뒤 되돌린다
+async function busy(work) {
+  els.saveBtn.disabled = true;
+  for (const b of els.savePanel.querySelectorAll('button')) b.disabled = true;
+  try {
+    await work();
   } catch (err) {
     console.error(err);
     showSaveMsg(`PDF를 만드는 중 문제가 생겼습니다. (${err?.message || err})`, 'bad');
   } finally {
     els.saveBtn.disabled = false;
     els.saveBtn.textContent = 'PDF로 저장';
+    for (const b of els.savePanel.querySelectorAll('button')) b.disabled = false;
   }
 }
 
-// 화면의 페이지 순서·회전대로 새 PDF를 만든다 (pdf-lib)
-async function buildPdf(fileName, onProgress = () => {}) {
+// ---------------------------------------------------------------------
+// 10MB 미만으로 줄이지 못했을 때: 원인과 대안 보여 주기
+// ---------------------------------------------------------------------
+function showOptions() {
+  const s = session;
+  const best = s.best;
+  const big = best.pageSizes
+    .map((size, i) => ({ no: i + 1, size }))
+    .sort((a, b) => b.size - a.size)
+    .slice(0, 5)
+    .filter((x) => x.size > 300_000);
+
+  const lines = [
+    `10MB 미만으로 줄이지 못했습니다.`,
+    `원본 ${formatSize(s.firstSize)} → 현재 ${formatSize(best.bytes.length)}${best.level ? ` (${LEVELS[best.level].name})` : ''}`,
+  ];
+  if (big.length) {
+    lines.push(`용량이 큰 쪽: ${big.map((x) => `${x.no}쪽 ${formatSize(x.size)}`).join(', ')}`);
+    lines.push('사진이나 스캔한 페이지가 많으면 화질을 낮춰도 크게 줄지 않을 수 있습니다.');
+  }
+  showSaveMsg(lines.join('\n'), 'warn');
+
+  // 화질을 낮출 수 있는 쪽(사진·스캔·그림으로 바꾼 쪽)이 있을 때만 '더 낮추기'를 보여 준다
+  const canLower = best.level < 3 && (best.compressedCount > 0 || best.rasterCount > 0);
+  els.savePanel.innerHTML = '';
+  if (canLower) {
+    addOption('화질 더 낮추기', '3단계 · 그림과 글자가 눈에 띄게 흐려질 수 있습니다', () =>
+      busy(() => tryLevels(3, 3)));
+  }
+  addOption('나눠서 저장', '10MB 미만 파일 여러 개(1부, 2부…)로 나눕니다', () =>
+    busy(splitAndOffer));
+  addOption(`이대로 저장 (${formatSize(best.bytes.length)})`, '10MB를 넘지만 지금 상태로 저장합니다', () =>
+    busy(() => finishDownload(best, s.fileName)));
+  const tip = document.createElement('p');
+  tip.className = 'hint';
+  tip.textContent = '또는 위 페이지 정리에서 필요 없는 쪽을 지운 뒤 다시 저장해도 됩니다.';
+  els.savePanel.appendChild(tip);
+  els.savePanel.hidden = false;
+}
+
+function addOption(title, desc, onClick) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'option-btn';
+  b.innerHTML = '<strong></strong><span></span>';
+  b.querySelector('strong').textContent = title;
+  b.querySelector('span').textContent = desc;
+  b.addEventListener('click', onClick);
+  els.savePanel.appendChild(b);
+}
+
+function hidePanel() {
+  els.savePanel.hidden = true;
+  els.savePanel.innerHTML = '';
+}
+
+// ---------------------------------------------------------------------
+// 나눠서 저장: 페이지별 용량을 보고 10MB 미만이 되도록 묶은 뒤, 실제로 만들어 확인한다
+// ---------------------------------------------------------------------
+async function splitAndOffer() {
+  const s = session;
+  const best = s.best;
+  const level = best.level;
+  const budget = TARGET_BYTES * 0.85;   // 어림값이 빗나갈 수 있어 여유를 둔다
+
+  // 1) 어림 용량으로 앞에서부터 묶기
+  const groups = [];
+  let cur = [], sum = 0;
+  s.pages.forEach((p, i) => {
+    const size = best.pageSizes[i];
+    if (cur.length && sum + size > budget) { groups.push(cur); cur = []; sum = 0; }
+    cur.push(i); sum += size;
+  });
+  if (cur.length) groups.push(cur);
+
+  // 2) 실제로 만들어 보고, 그래도 크면 반으로 나눠 다시 만든다
+  const parts = [];
+  const queue = [...groups];
+  while (queue.length) {
+    const g = queue.shift();
+    els.saveBtn.textContent = `나눠서 만드는 중… ${parts.length + 1}부`;
+    const res = await buildPdf(g.map((i) => s.pages[i]), s.fileName, level);
+    if (res.bytes.length >= TARGET_BYTES && g.length > 1) {
+      const half = Math.ceil(g.length / 2);
+      queue.unshift(g.slice(0, half), g.slice(half));
+      continue;
+    }
+    if (!(await checkRedaction(res))) return;
+    parts.push({ res, from: g[0] + 1, to: g[g.length - 1] + 1 });
+  }
+
+  // 3) 부분 파일마다 내려받기 버튼 (휴대폰은 여러 파일을 한꺼번에 내려받지 못하게 막을 수 있어서)
+  const base = s.fileName.replace(/\.pdf$/, '');
+  els.savePanel.innerHTML = '';
+  parts.forEach((part, k) => {
+    const name = `${base}_${k + 1}부.pdf`;
+    const over = part.res.bytes.length >= TARGET_BYTES;
+    addOption(
+      `${k + 1}부 내려받기 (${part.from === part.to ? part.from : `${part.from}~${part.to}`}쪽 · ${formatSize(part.res.bytes.length)})`,
+      over ? '이 쪽 하나만으로 10MB를 넘습니다' : name,
+      () => download(part.res.bytes, name),
+    );
+  });
+  const allOk = parts.every((p) => p.res.bytes.length < TARGET_BYTES);
+  showSaveMsg(
+    `${parts.length}개 파일로 나눴습니다. ${allOk ? '모두 10MB 미만입니다.' : '일부 파일은 한 쪽만으로 10MB를 넘습니다.'}\n아래 버튼을 하나씩 눌러 내려받으세요.`,
+    allOk ? 'good' : 'warn',
+  );
+  els.savePanel.hidden = false;
+}
+
+// ---------------------------------------------------------------------
+// PDF 만들기 (pdf-lib)
+// ---------------------------------------------------------------------
+async function buildPdf(pages, fileName, level = 0, onProgress = () => {}) {
   const { PDFDocument, degrees } = window.PDFLib;
+  const s = session;
+  const lv = LEVELS[level];
   const out = await PDFDocument.create();
   const imagedFiles = [];
 
-  // 1) 파일마다 필요한 페이지 번호를 모아 한 번에 복사한다
-  //    (같은 파일의 글꼴·이미지를 여러 번 복사하지 않아 용량이 덜 늘어난다)
-  //    편집 제한(보호 설정)이 걸렸거나 구조가 특이해서 복사가 안 되는 파일은
-  //    건너뛰고, 2)에서 페이지를 그림으로 바꿔 넣는다.
-  const copied = new Map();   // '파일id:페이지번호' → 복사된 페이지
-  for (const file of state.files) {
-    // ※ 가린 페이지는 원본을 절대 복사하지 않는다.
-    //    (복사만 해 두고 쓰지 않아도 원본 글자 데이터가 결과 파일 안에 남을 수 있기 때문)
-    const indices = state.pages
-      .filter((p) => p.fileId === file.id && p.masks.length === 0)
-      .map((p) => p.index);
-    if (!indices.length) continue;
+  // 1) 원본 파일 읽기 (편집 제한 등으로 못 읽으면 null → 그림으로 바꿔 넣는다)
+  for (const fileId of new Set(pages.map((p) => p.fileId))) {
+    if (s.srcs.has(fileId)) continue;
+    const file = state.files.find((f) => f.id === fileId);
     try {
-      const src = await PDFDocument.load(file.bytes);   // 보호 설정이 있으면 여기서 오류
-      const pages = await out.copyPages(src, indices);
-      indices.forEach((idx, i) => copied.set(`${file.id}:${idx}`, pages[i]));
+      s.srcs.set(fileId, await PDFDocument.load(file.bytes));
     } catch (err) {
       console.warn(`${file.name}: 그대로 복사할 수 없어 그림으로 바꿉니다.`, err);
-      imagedFiles.push(file.name);
+      s.srcs.set(fileId, null);
     }
   }
+  for (const fileId of new Set(pages.map((p) => p.fileId))) {
+    if (s.srcs.get(fileId) === null) imagedFiles.push(state.files.find((f) => f.id === fileId).name);
+  }
 
-  // 2) 화면 순서대로 붙이고, 사용자가 돌린 각도를 더한다
-  //    가린 페이지는 그림으로 바꾼 뒤 그 위에 칠한다 → 가린 곳 아래 글자가 파일에 남지 않는다
-  const redacted = [];   // 가린 페이지 정보 (저장 후 검증에 사용)
-  let done = 0;
-  for (const p of state.pages) {
+  // 2) 페이지마다 '원본 복사' 또는 '그림으로 바꾸기'를 정한다
+  //    - 가린 쪽 / 편집 제한 쪽 → 항상 그림 (가린 쪽은 원본을 절대 복사하지 않는다)
+  //    - 압축 단계에서 그림 용량이 큰 쪽 → 그림으로 바꿔 보고, 실제로 작아질 때만 바꾼다
+  const plans = [];
+  let done = 0, compressedCount = 0, rasterCount = 0;
+  for (const p of pages) {
     const file = state.files.find((f) => f.id === p.fileId);
-    let page = copied.get(p.key);
-    if (p.masks.length) {
-      redacted.push({
-        outIndex: done,
-        hidden: await hiddenTextsOf(file, p.index, p.masks),
-      });
-      page = await addPageAsImage(out, file, p.index, p.masks);
-    } else if (page) {
-      out.addPage(page);
-    } else {
-      page = await addPageAsImage(out, file, p.index);
+    const src = s.srcs.get(p.fileId);
+    let plan = { p, file, mode: 'copy' };
+    if (p.masks.length || !src) {
+      plan = { ...plan, mode: 'image', jpg: await pageJpg(file, p, lv || RASTER_DEFAULT) };
+      rasterCount++;
+    } else if (lv) {
+      const imgBytes = imageBytesOf(s, src, p);
+      if (imgBytes > HEAVY_BYTES) {
+        const jpg = await pageJpg(file, p, lv);
+        if (jpg.bytes.length < imgBytes * 0.9) {
+          plan = { ...plan, mode: 'image', jpg };
+          compressedCount++;
+        }
+      }
     }
-    if (p.rot) page.setRotation(degrees((page.getRotation().angle + p.rot) % 360));
-    onProgress(++done, state.pages.length);
+    plans.push(plan);
+    onProgress(++done, pages.length * 2);
   }
 
-  // 3) PDF 속성 정보 정리: 제목만 파일 이름으로, 나머지(작성자·프로그램 등)는 비운다
+  // 3) 원본 복사할 쪽은 파일별로 한 번에 복사 (글꼴·그림 중복 복사 방지)
+  //    ※ 그림으로 바꿀 쪽은 복사 목록에서 뺀다. 복사만 해 두고 안 써도 파일에 남기 때문.
+  const copied = new Map();
+  for (const [fileId, src] of s.srcs) {
+    const list = plans.filter((x) => x.mode === 'copy' && x.p.fileId === fileId);
+    if (!list.length || !src) continue;
+    const got = await out.copyPages(src, list.map((x) => x.p.index));
+    list.forEach((x, i) => copied.set(x.p.key, got[i]));
+  }
+
+  // 4) 화면 순서대로 붙이기 + 회전
+  const redacted = [];
+  const pageSizes = [];
+  for (const [i, x] of plans.entries()) {
+    let page;
+    if (x.mode === 'copy') {
+      page = out.addPage(copied.get(x.p.key));
+      pageSizes.push(imageBytesOf(s, s.srcs.get(x.p.fileId), x.p) + 20_000);
+    } else {
+      const img = await out.embedJpg(x.jpg.bytes);
+      page = out.addPage([x.jpg.w, x.jpg.h]);
+      page.drawImage(img, { x: 0, y: 0, width: x.jpg.w, height: x.jpg.h });
+      pageSizes.push(x.jpg.bytes.length + 2_000);
+      if (x.p.masks.length) {
+        redacted.push({ outIndex: i, hidden: await hiddenTextsOf(x.file, x.p.index, x.p.masks) });
+      }
+    }
+    if (x.p.rot) page.setRotation(degrees((page.getRotation().angle + x.p.rot) % 360));
+    onProgress(++done, pages.length * 2);
+  }
+
+  // 5) PDF 속성 정보 정리: 제목만 파일 이름으로, 나머지(작성자·프로그램 등)는 비운다
   out.setTitle(fileName.replace(/\.pdf$/, ''));
   out.setAuthor('');
   out.setSubject('');
@@ -1043,21 +1263,49 @@ async function buildPdf(fileName, onProgress = () => {}) {
   out.setProducer('');
 
   const bytes = await out.save({ useObjectStreams: true });
-  return { bytes, imagedFiles, redacted };
+  return { bytes, level, imagedFiles, redacted, pageSizes, compressedCount, rasterCount, pageCount: pages.length };
 }
 
-// 페이지를 그림으로 바꿔 새 PDF에 넣는다 (PDF.js로 그리고 → JPG → pdf-lib에 넣기)
+// 페이지 속 그림(사진·스캔)들의 용량 합계 (pdf-lib로 원본 구조를 들여다본다)
+function imageBytesOf(s, src, p) {
+  if (s.imgBytes.has(p.key)) return s.imgBytes.get(p.key);
+  let total = 0;
+  try {
+    const res = src.getPage(p.index).node.Resources();
+    total = res ? xobjectBytes(res, src.context, 0) : 0;
+  } catch { total = 0; }
+  s.imgBytes.set(p.key, total);
+  return total;
+}
+
+function xobjectBytes(resources, context, depth) {
+  const { PDFName, PDFDict } = window.PDFLib;
+  const xo = resources.lookup(PDFName.of('XObject'));
+  if (!(xo instanceof PDFDict)) return 0;
+  let sum = 0;
+  for (const [, ref] of xo.entries()) {
+    const obj = context.lookup(ref);
+    if (!obj || !obj.dict) continue;
+    const sub = obj.dict.get(PDFName.of('Subtype'));
+    if (sub === PDFName.of('Image')) {
+      sum += obj.contents?.length || 0;
+    } else if (sub === PDFName.of('Form') && depth < 3) {
+      const inner = obj.dict.lookup(PDFName.of('Resources'));
+      if (inner instanceof PDFDict) sum += xobjectBytes(inner, context, depth + 1);
+    }
+  }
+  return sum;
+}
+
+// 페이지를 그림(JPG)으로 바꾼다. 가린 영역이 있으면 그 위에 칠한다.
 //  - 화면에 보이는 모습 그대로 옮겨지지만, 글자는 그림이 되어 선택·검색이 안 된다.
-//  - 다음 단계의 '개인정보 실제 제거'와 '용량 줄이기'에서도 이 방법을 쓴다.
-const IMAGE_DPI = 150;        // 화면·인쇄 모두 읽기에 충분한 선명도
-const IMAGE_QUALITY = 0.85;
+async function pageJpg(file, p, { dpi, q }) {
+  const cacheKey = `${p.key}|${dpi}|${q}|${JSON.stringify(p.masks)}`;
+  if (session.jpgs.has(cacheKey)) return session.jpgs.get(cacheKey);
 
-async function addPageAsImage(out, file, index, masks = []) {
-  const page = await file.pdf.getPage(index + 1);
-
-  // 원래 페이지 크기(포인트)와 원래 회전을 그대로 반영
-  const sizeView = page.getViewport({ scale: 1 });
-  const view = page.getViewport({ scale: IMAGE_DPI / 72 });
+  const page = await file.pdf.getPage(p.index + 1);
+  const sizeView = page.getViewport({ scale: 1 });        // 원래 페이지 크기(포인트)와 원래 회전
+  const view = page.getViewport({ scale: dpi / 72 });
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(view.width);
@@ -1068,7 +1316,7 @@ async function addPageAsImage(out, file, index, masks = []) {
   await page.render({ canvas, viewport: view }).promise;
 
   // 가린 영역 칠하기 (그림 위에 직접 칠하므로 아래 내용은 사라진다)
-  for (const m of masks) {
+  for (const m of p.masks) {
     ctx.fillStyle = m.color;
     // 경계가 흐릿하게 남지 않도록 1픽셀씩 넉넉하게 칠한다
     const x0 = Math.floor(m.x * canvas.width) - 1;
@@ -1078,13 +1326,11 @@ async function addPageAsImage(out, file, index, masks = []) {
     ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
   }
 
-  const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/jpeg', IMAGE_QUALITY));
-  const jpg = await out.embedJpg(new Uint8Array(await blob.arrayBuffer()));
+  const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/jpeg', q));
   canvas.width = canvas.height = 0;   // 메모리 정리
-
-  const newPage = out.addPage([sizeView.width, sizeView.height]);
-  newPage.drawImage(jpg, { x: 0, y: 0, width: sizeView.width, height: sizeView.height });
-  return newPage;
+  const result = { bytes: new Uint8Array(await blob.arrayBuffer()), w: sizeView.width, h: sizeView.height };
+  session.jpgs.set(cacheKey, result);
+  return result;
 }
 
 // =====================================================================
