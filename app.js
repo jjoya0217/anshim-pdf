@@ -646,19 +646,27 @@ async function savePdf() {
   showSaveMsg('');
 
   try {
-    const bytes = await buildPdf(fileName);
+    const { bytes, imagedFiles } = await buildPdf(fileName, (done, total) => {
+      els.saveBtn.textContent = `PDF 만드는 중… ${done}/${total}쪽`;
+    });
     download(bytes, fileName);
 
     // 결과 안내: 10MB 기준과 비교
-    const size = formatSize(bytes.length);
+    const lines = [`저장했습니다: ${fileName} (${state.pages.length}쪽 · ${formatSize(bytes.length)})`];
+    let type = 'good';
     if (bytes.length < TARGET_BYTES) {
-      showSaveMsg(`저장했습니다: ${fileName} (${state.pages.length}쪽 · ${size})\n공문 첨부 기준(10MB 미만)을 만족합니다.`, 'good');
+      lines.push('공문 첨부 기준(10MB 미만)을 만족합니다.');
     } else {
-      showSaveMsg(`저장했습니다: ${fileName} (${state.pages.length}쪽 · ${size})\n공문 첨부 기준 10MB를 넘습니다. 용량 줄이기 기능은 다음 단계에서 추가됩니다.`, 'warn');
+      lines.push('공문 첨부 기준 10MB를 넘습니다. 용량 줄이기 기능은 다음 단계에서 추가됩니다.');
+      type = 'warn';
     }
+    if (imagedFiles.length) {
+      lines.push(`※ 편집 제한이 걸린 파일(${imagedFiles.join(', ')})은 페이지를 그림으로 바꿔 넣었습니다. 해당 페이지는 글자 선택·검색이 되지 않습니다.`);
+    }
+    showSaveMsg(lines.join('\n'), type);
   } catch (err) {
     console.error(err);
-    showSaveMsg('PDF를 만드는 중 문제가 생겼습니다. 파일 하나씩 저장해 보거나, 문제 파일을 알려 주세요.', 'bad');
+    showSaveMsg(`PDF를 만드는 중 문제가 생겼습니다. (${err?.message || err})`, 'bad');
   } finally {
     els.saveBtn.disabled = false;
     els.saveBtn.textContent = 'PDF로 저장';
@@ -666,26 +674,41 @@ async function savePdf() {
 }
 
 // 화면의 페이지 순서·회전대로 새 PDF를 만든다 (pdf-lib)
-async function buildPdf(fileName) {
+async function buildPdf(fileName, onProgress = () => {}) {
   const { PDFDocument, degrees } = window.PDFLib;
   const out = await PDFDocument.create();
+  const imagedFiles = [];
 
   // 1) 파일마다 필요한 페이지 번호를 모아 한 번에 복사한다
   //    (같은 파일의 글꼴·이미지를 여러 번 복사하지 않아 용량이 덜 늘어난다)
+  //    편집 제한(보호 설정)이 걸렸거나 구조가 특이해서 복사가 안 되는 파일은
+  //    건너뛰고, 2)에서 페이지를 그림으로 바꿔 넣는다.
   const copied = new Map();   // '파일id:페이지번호' → 복사된 페이지
   for (const file of state.files) {
     const indices = state.pages.filter((p) => p.fileId === file.id).map((p) => p.index);
     if (!indices.length) continue;
-    const src = await PDFDocument.load(file.bytes);
-    const pages = await out.copyPages(src, indices);
-    indices.forEach((idx, i) => copied.set(`${file.id}:${idx}`, pages[i]));
+    try {
+      const src = await PDFDocument.load(file.bytes);   // 보호 설정이 있으면 여기서 오류
+      const pages = await out.copyPages(src, indices);
+      indices.forEach((idx, i) => copied.set(`${file.id}:${idx}`, pages[i]));
+    } catch (err) {
+      console.warn(`${file.name}: 그대로 복사할 수 없어 그림으로 바꿉니다.`, err);
+      imagedFiles.push(file.name);
+    }
   }
 
   // 2) 화면 순서대로 붙이고, 사용자가 돌린 각도를 더한다
+  let done = 0;
   for (const p of state.pages) {
-    const page = copied.get(p.key);
+    let page = copied.get(p.key);
+    if (page) {
+      out.addPage(page);
+    } else {
+      const file = state.files.find((f) => f.id === p.fileId);
+      page = await addPageAsImage(out, file, p.index);
+    }
     if (p.rot) page.setRotation(degrees((page.getRotation().angle + p.rot) % 360));
-    out.addPage(page);
+    onProgress(++done, state.pages.length);
   }
 
   // 3) PDF 속성 정보 정리: 제목만 파일 이름으로, 나머지(작성자·프로그램 등)는 비운다
@@ -696,7 +719,38 @@ async function buildPdf(fileName) {
   out.setCreator('');
   out.setProducer('');
 
-  return await out.save({ useObjectStreams: true });
+  const bytes = await out.save({ useObjectStreams: true });
+  return { bytes, imagedFiles };
+}
+
+// 페이지를 그림으로 바꿔 새 PDF에 넣는다 (PDF.js로 그리고 → JPG → pdf-lib에 넣기)
+//  - 화면에 보이는 모습 그대로 옮겨지지만, 글자는 그림이 되어 선택·검색이 안 된다.
+//  - 다음 단계의 '개인정보 실제 제거'와 '용량 줄이기'에서도 이 방법을 쓴다.
+const IMAGE_DPI = 150;        // 화면·인쇄 모두 읽기에 충분한 선명도
+const IMAGE_QUALITY = 0.85;
+
+async function addPageAsImage(out, file, index) {
+  const page = await file.pdf.getPage(index + 1);
+
+  // 원래 페이지 크기(포인트)와 원래 회전을 그대로 반영
+  const sizeView = page.getViewport({ scale: 1 });
+  const view = page.getViewport({ scale: IMAGE_DPI / 72 });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(view.width);
+  canvas.height = Math.round(view.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvas, viewport: view }).promise;
+
+  const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/jpeg', IMAGE_QUALITY));
+  const jpg = await out.embedJpg(new Uint8Array(await blob.arrayBuffer()));
+  canvas.width = canvas.height = 0;   // 메모리 정리
+
+  const newPage = out.addPage([sizeView.width, sizeView.height]);
+  newPage.drawImage(jpg, { x: 0, y: 0, width: sizeView.width, height: sizeView.height });
+  return newPage;
 }
 
 // 만든 PDF를 사용자 기기에 내려받게 한다 (서버를 거치지 않는다)
