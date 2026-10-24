@@ -29,7 +29,9 @@ const PDFJS_OPTIONS = {
 //  files: 불러온 파일 목록  { id, name, size, bytes, pdf, pageCount }
 //    - bytes: 원본 파일 데이터. 나중에 pdf-lib로 병합·저장할 때 쓴다.
 //    - pdf  : PDF.js가 연 문서. 미리보기를 그릴 때 쓴다.
-//  pages: 화면에 보이는 페이지 순서 { fileId, index }
+//  pages: 화면에 보이는 페이지 순서 { fileId, index, key, rot, masks }
+//    - rot: 사용자가 돌린 각도(0·90·180·270)
+//    - masks: 가린 영역 목록 { x, y, w, h, color } (0~1 비율, 회전 전 기준)
 //    - 다음 단계에서 삭제·순서 변경·회전은 이 목록만 바꾸면 된다.
 const state = {
   files: [],
@@ -155,7 +157,7 @@ async function addFiles(fileList) {
         pageCount: pdf.numPages,
       });
       for (let i = 0; i < pdf.numPages; i++) {
-        state.pages.push({ fileId: id, index: i, key: `${id}:${i}`, rot: 0 });
+        state.pages.push({ fileId: id, index: i, key: `${id}:${i}`, rot: 0, masks: [] });
       }
       added++;
     } catch (err) {
@@ -415,14 +417,24 @@ function renderPages() {
       <div class="thumb" data-key="${p.key}">
         <span class="check" aria-hidden="true">✓</span>
       </div>
-      <figcaption>${tagOf(file)} ${order + 1}쪽${p.rot ? ` <span class="rot">↻${p.rot}°</span>` : ''}</figcaption>`;
+      <figcaption>${tagOf(file)} ${order + 1}쪽${p.rot ? ` <span class="rot">↻${p.rot}°</span>` : ''}${p.masks.length ? ` <span class="mask-count">가림 ${p.masks.length}</span>` : ''}</figcaption>`;
     els.pageGrid.appendChild(fig);
 
     const box = fig.querySelector('.thumb');
     const cached = thumbCache.get(thumbKey(p));
-    if (cached) box.appendChild(cached);
+    if (cached) showSheet(box, cached, p);
     else observer.observe(box);
   });
+}
+
+// 미리보기 그림 위에 가린 영역을 겹쳐 보여 준다
+function showSheet(box, canvas, p) {
+  box.querySelector('.sheet')?.remove();
+  const sheet = document.createElement('div');
+  sheet.className = 'sheet';
+  sheet.appendChild(canvas);
+  for (const m of p.masks) sheet.appendChild(maskEl(toDisplay(m, p.rot), m.color));
+  box.appendChild(sheet);
 }
 
 // 페이지 한 장을 작은 그림으로 그린다 (회전 반영)
@@ -444,8 +456,7 @@ async function drawThumb(box) {
 
     await page.render({ canvas, viewport }).promise;
     thumbCache.set(thumbKey(p), canvas);
-    box.querySelector('canvas')?.remove();
-    box.appendChild(canvas);
+    showSheet(box, canvas, p);
   } catch {
     box.append('미리보기 실패');
   }
@@ -481,6 +492,7 @@ els.selectAllBtn.addEventListener('click', () => {
 els.toolbar.addEventListener('click', (e) => {
   const act = e.target.closest('button[data-act]')?.dataset.act;
   if (!act) return;
+  if (act === 'mask') openEditorForSelection();
   if (act === 'rotL') rotateSelected(-90);
   if (act === 'rotR') rotateSelected(90);
   if (act === 'prev') shiftSelected(-1);
@@ -493,7 +505,7 @@ els.toolbar.addEventListener('click', (e) => {
 
 // 바꾸기 직전의 페이지 목록을 기록해 둔다 (페이지 객체도 복사: 회전값이 바뀌므로)
 function remember() {
-  history.push(state.pages.map((p) => ({ ...p })));
+  history.push(state.pages.map((p) => ({ ...p, masks: p.masks.map((m) => ({ ...m })) })));
   if (history.length > HISTORY_MAX) history.shift();
 }
 
@@ -601,6 +613,210 @@ function renderToolbar() {
 }
 
 // =====================================================================
+// 5-3. 개인정보 가리기 (2단계)
+// =====================================================================
+// 가린 영역은 페이지 크기에 대한 비율(0~1)로 저장한다. 예: { x: 0.1, y: 0.2, w: 0.3, h: 0.05 }
+// 기준은 '사용자가 돌리기 전' 페이지 모습이다. 그래서 나중에 페이지를 돌려도
+// 가린 위치가 어긋나지 않는다. 화면에 보여 줄 때만 돌린 각도만큼 변환한다.
+
+const MASK_COLORS = { '#000000': '검은색', '#808080': '회색', '#ffffff': '흰색' };
+let maskColor = '#000000';
+
+// 비율 좌표를 시계 방향으로 90도씩 돌린다 (돌리기 전 → 화면)
+function toDisplay(r, rot) {
+  let { x, y, w, h } = r;
+  for (let k = 0; k < rot / 90; k++) [x, y, w, h] = [1 - (y + h), x, h, w];
+  return { x, y, w, h };
+}
+// 반대 방향 (화면 → 돌리기 전)
+function toBase(r, rot) {
+  let { x, y, w, h } = r;
+  for (let k = 0; k < rot / 90; k++) [x, y, w, h] = [y, 1 - (x + w), h, w];
+  return { x, y, w, h };
+}
+
+// 가림 상자 하나를 화면 요소로 만든다 (위치는 % 단위)
+function maskEl(r, color) {
+  const div = document.createElement('div');
+  div.className = 'mask';
+  div.style.left = r.x * 100 + '%';
+  div.style.top = r.y * 100 + '%';
+  div.style.width = r.w * 100 + '%';
+  div.style.height = r.h * 100 + '%';
+  div.style.background = color;
+  return div;
+}
+
+const ed = {
+  root: $('editor'), title: $('edTitle'), prev: $('edPrev'), next: $('edNext'), done: $('edDone'),
+  stage: $('edStage'), sheet: $('edSheet'), canvas: $('edCanvas'), layer: $('edLayer'),
+  delSel: $('edDelSel'), clear: $('edClear'),
+  pos: 0,              // 지금 보고 있는 페이지의 순서 (state.pages 안에서)
+  selMask: -1,         // 선택한 상자 번호 (-1 = 없음)
+  changed: false,
+  renderTask: null,
+};
+
+function openEditorForSelection() {
+  const pos = state.pages.findIndex((p) => selected.has(p.key));
+  if (pos < 0) return;
+  remember();            // 되돌리기를 위해 가리기 전 상태 기록
+  ed.changed = false;
+  ed.root.hidden = false;
+  document.body.style.overflow = 'hidden';
+  showEditorPage(pos);
+}
+
+function closeEditor() {
+  ed.root.hidden = true;
+  document.body.style.overflow = '';
+  if (!ed.changed) history.pop();   // 바뀐 것이 없으면 되돌리기 기록도 취소
+  render();
+}
+
+async function showEditorPage(pos) {
+  ed.pos = pos;
+  ed.selMask = -1;
+  const p = state.pages[pos];
+  const file = state.files.find((f) => f.id === p.fileId);
+  ed.title.textContent = `${pos + 1}쪽 / ${state.pages.length}쪽`;
+  ed.prev.disabled = pos === 0;
+  ed.next.disabled = pos === state.pages.length - 1;
+
+  // 화면에 꽉 차게 (가로·세로 중 먼저 닿는 쪽에 맞춤), 선명하게 기기 화소 밀도만큼 크게 그린다
+  const page = await file.pdf.getPage(p.index + 1);
+  const rotation = (page.rotate + p.rot) % 360;
+  const base = page.getViewport({ scale: 1, rotation });
+  const box = ed.stage.getBoundingClientRect();
+  const fit = Math.min((box.width - 16) / base.width, (box.height - 16) / base.height);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const view = page.getViewport({ scale: fit * dpr, rotation });
+
+  ed.renderTask?.cancel();
+  ed.canvas.width = Math.round(view.width);
+  ed.canvas.height = Math.round(view.height);
+  ed.canvas.style.width = Math.round(base.width * fit) + 'px';
+  ed.canvas.style.height = Math.round(base.height * fit) + 'px';
+  drawEditorMasks();
+  ed.renderTask = page.render({ canvas: ed.canvas, viewport: view });
+  try { await ed.renderTask.promise; } catch { /* 다른 쪽으로 넘어가며 취소된 경우 */ }
+}
+
+function drawEditorMasks() {
+  const p = state.pages[ed.pos];
+  ed.layer.innerHTML = '';
+  p.masks.forEach((m, i) => {
+    const el = maskEl(toDisplay(m, p.rot), m.color);
+    el.dataset.i = i;
+    if (i === ed.selMask) el.classList.add('sel');
+    ed.layer.appendChild(el);
+  });
+  ed.delSel.disabled = ed.selMask < 0;
+  ed.clear.disabled = p.masks.length === 0;
+}
+
+// ---- 상자 그리기: 누르고 끌기 → 놓으면 완성 ----
+let drag = null;
+
+function layerPoint(e) {
+  const r = ed.layer.getBoundingClientRect();
+  return {
+    x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+    y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+  };
+}
+
+ed.layer.addEventListener('pointerdown', (e) => {
+  // 이미 그린 상자를 누르면 → 선택 (그 상자의 색으로 색 버튼도 맞춘다)
+  const hit = e.target.closest('.mask');
+  if (hit && !hit.classList.contains('drawing')) {
+    ed.selMask = Number(hit.dataset.i) === ed.selMask ? -1 : Number(hit.dataset.i);
+    if (ed.selMask >= 0) setMaskColor(state.pages[ed.pos].masks[ed.selMask].color, false);
+    drawEditorMasks();
+    return;
+  }
+  ed.layer.setPointerCapture(e.pointerId);
+  const start = layerPoint(e);
+  const el = maskEl({ x: start.x, y: start.y, w: 0, h: 0 }, maskColor);
+  el.classList.add('drawing');
+  ed.layer.appendChild(el);
+  drag = { start, el, rect: null };
+});
+
+ed.layer.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const pt = layerPoint(e);
+  const r = {
+    x: Math.min(drag.start.x, pt.x), y: Math.min(drag.start.y, pt.y),
+    w: Math.abs(pt.x - drag.start.x), h: Math.abs(pt.y - drag.start.y),
+  };
+  Object.assign(drag.el.style, {
+    left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%',
+  });
+  drag.rect = r;
+});
+
+function endDrag() {
+  if (!drag) return;
+  const r = drag.rect;
+  drag = null;
+  // 너무 작은 상자(실수로 톡 친 경우)는 버린다
+  if (r && r.w > 0.01 && r.h > 0.005) {
+    const p = state.pages[ed.pos];
+    p.masks.push({ ...toBase(r, p.rot), color: maskColor });
+    ed.selMask = -1;
+    ed.changed = true;
+  }
+  drawEditorMasks();
+}
+ed.layer.addEventListener('pointerup', endDrag);
+ed.layer.addEventListener('pointercancel', endDrag);
+
+// ---- 색 고르기 ----
+function setMaskColor(color, applyToSelected = true) {
+  maskColor = color;
+  for (const b of document.querySelectorAll('.swatch')) {
+    b.classList.toggle('on', b.dataset.color === color);
+  }
+  // 선택한 상자가 있으면 그 상자의 색도 바꾼다
+  if (applyToSelected && ed.selMask >= 0) {
+    state.pages[ed.pos].masks[ed.selMask].color = color;
+    ed.changed = true;
+    drawEditorMasks();
+  }
+}
+for (const b of document.querySelectorAll('.swatch')) {
+  b.addEventListener('click', () => setMaskColor(b.dataset.color));
+}
+
+// ---- 버튼들 ----
+ed.delSel.addEventListener('click', () => {
+  if (ed.selMask < 0) return;
+  state.pages[ed.pos].masks.splice(ed.selMask, 1);
+  ed.selMask = -1;
+  ed.changed = true;
+  drawEditorMasks();
+});
+ed.clear.addEventListener('click', () => {
+  const p = state.pages[ed.pos];
+  if (!p.masks.length || !confirm('이 쪽의 가림 상자를 모두 지울까요?')) return;
+  p.masks = [];
+  ed.selMask = -1;
+  ed.changed = true;
+  drawEditorMasks();
+});
+ed.prev.addEventListener('click', () => ed.pos > 0 && showEditorPage(ed.pos - 1));
+ed.next.addEventListener('click', () => ed.pos < state.pages.length - 1 && showEditorPage(ed.pos + 1));
+ed.done.addEventListener('click', closeEditor);
+document.addEventListener('keydown', (e) => {
+  if (ed.root.hidden) return;
+  if (e.key === 'Escape') closeEditor();
+  if ((e.key === 'Delete' || e.key === 'Backspace') && ed.selMask >= 0) ed.delSel.click();
+});
+// 휴대폰을 돌리거나 창 크기가 바뀌면 다시 맞춘다
+window.addEventListener('resize', () => { if (!ed.root.hidden) showEditorPage(ed.pos); });
+
+// =====================================================================
 // 5-2. 저장 (1단계-⑤): 파일명 지정 → 새 PDF 만들기 → 내려받기
 // =====================================================================
 
@@ -646,9 +862,21 @@ async function savePdf() {
   showSaveMsg('');
 
   try {
-    const { bytes, imagedFiles } = await buildPdf(fileName, (done, total) => {
+    const { bytes, imagedFiles, redacted } = await buildPdf(fileName, (done, total) => {
       els.saveBtn.textContent = `PDF 만드는 중… ${done}/${total}쪽`;
     });
+
+    // 가린 쪽이 있으면 내려받기 전에 실제로 지워졌는지 검사한다
+    let check = null;
+    if (redacted.length) {
+      els.saveBtn.textContent = '가린 내용이 지워졌는지 검사하는 중…';
+      check = await verifyRedaction(bytes, redacted);
+      if (!check.ok) {
+        // 이론상 일어나면 안 되는 상황: 파일을 내려주지 않는다
+        showSaveMsg('가린 쪽에서 글자 정보가 발견되어 저장을 멈췄습니다. 안전을 위해 파일을 만들지 않았습니다.', 'bad');
+        return;
+      }
+    }
     download(bytes, fileName);
 
     // 결과 안내: 10MB 기준과 비교
@@ -659,6 +887,14 @@ async function savePdf() {
     } else {
       lines.push('공문 첨부 기준 10MB를 넘습니다. 용량 줄이기 기능은 다음 단계에서 추가됩니다.');
       type = 'warn';
+    }
+    if (check) {
+      lines.push(`✔ 개인정보 실제 제거 확인: 가린 ${redacted.length}쪽은 그림으로 바뀌어 가린 곳의 글자가 파일에 남아 있지 않습니다.`);
+      for (const e of check.elsewhere.slice(0, 5)) {
+        const shown = e.text.length > 30 ? e.text.slice(0, 30) + '…' : e.text;
+        lines.push(`⚠ 가린 내용 "${shown}"이(가) ${e.pages.join(', ')}쪽에 그대로 남아 있습니다. 그 쪽도 가려야 하는지 확인해 주세요.`);
+        type = 'warn';
+      }
     }
     if (imagedFiles.length) {
       lines.push(`※ 편집 제한이 걸린 파일(${imagedFiles.join(', ')})은 페이지를 그림으로 바꿔 넣었습니다. 해당 페이지는 글자 선택·검색이 되지 않습니다.`);
@@ -685,7 +921,11 @@ async function buildPdf(fileName, onProgress = () => {}) {
   //    건너뛰고, 2)에서 페이지를 그림으로 바꿔 넣는다.
   const copied = new Map();   // '파일id:페이지번호' → 복사된 페이지
   for (const file of state.files) {
-    const indices = state.pages.filter((p) => p.fileId === file.id).map((p) => p.index);
+    // ※ 가린 페이지는 원본을 절대 복사하지 않는다.
+    //    (복사만 해 두고 쓰지 않아도 원본 글자 데이터가 결과 파일 안에 남을 수 있기 때문)
+    const indices = state.pages
+      .filter((p) => p.fileId === file.id && p.masks.length === 0)
+      .map((p) => p.index);
     if (!indices.length) continue;
     try {
       const src = await PDFDocument.load(file.bytes);   // 보호 설정이 있으면 여기서 오류
@@ -698,13 +938,21 @@ async function buildPdf(fileName, onProgress = () => {}) {
   }
 
   // 2) 화면 순서대로 붙이고, 사용자가 돌린 각도를 더한다
+  //    가린 페이지는 그림으로 바꾼 뒤 그 위에 칠한다 → 가린 곳 아래 글자가 파일에 남지 않는다
+  const redacted = [];   // 가린 페이지 정보 (저장 후 검증에 사용)
   let done = 0;
   for (const p of state.pages) {
+    const file = state.files.find((f) => f.id === p.fileId);
     let page = copied.get(p.key);
-    if (page) {
+    if (p.masks.length) {
+      redacted.push({
+        outIndex: done,
+        hidden: await hiddenTextsOf(file, p.index, p.masks),
+      });
+      page = await addPageAsImage(out, file, p.index, p.masks);
+    } else if (page) {
       out.addPage(page);
     } else {
-      const file = state.files.find((f) => f.id === p.fileId);
       page = await addPageAsImage(out, file, p.index);
     }
     if (p.rot) page.setRotation(degrees((page.getRotation().angle + p.rot) % 360));
@@ -720,7 +968,7 @@ async function buildPdf(fileName, onProgress = () => {}) {
   out.setProducer('');
 
   const bytes = await out.save({ useObjectStreams: true });
-  return { bytes, imagedFiles };
+  return { bytes, imagedFiles, redacted };
 }
 
 // 페이지를 그림으로 바꿔 새 PDF에 넣는다 (PDF.js로 그리고 → JPG → pdf-lib에 넣기)
@@ -729,7 +977,7 @@ async function buildPdf(fileName, onProgress = () => {}) {
 const IMAGE_DPI = 150;        // 화면·인쇄 모두 읽기에 충분한 선명도
 const IMAGE_QUALITY = 0.85;
 
-async function addPageAsImage(out, file, index) {
+async function addPageAsImage(out, file, index, masks = []) {
   const page = await file.pdf.getPage(index + 1);
 
   // 원래 페이지 크기(포인트)와 원래 회전을 그대로 반영
@@ -744,6 +992,17 @@ async function addPageAsImage(out, file, index) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvas, viewport: view }).promise;
 
+  // 가린 영역 칠하기 (그림 위에 직접 칠하므로 아래 내용은 사라진다)
+  for (const m of masks) {
+    ctx.fillStyle = m.color;
+    // 경계가 흐릿하게 남지 않도록 1픽셀씩 넉넉하게 칠한다
+    const x0 = Math.floor(m.x * canvas.width) - 1;
+    const y0 = Math.floor(m.y * canvas.height) - 1;
+    const x1 = Math.ceil((m.x + m.w) * canvas.width) + 1;
+    const y1 = Math.ceil((m.y + m.h) * canvas.height) + 1;
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+
   const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/jpeg', IMAGE_QUALITY));
   const jpg = await out.embedJpg(new Uint8Array(await blob.arrayBuffer()));
   canvas.width = canvas.height = 0;   // 메모리 정리
@@ -751,6 +1010,74 @@ async function addPageAsImage(out, file, index) {
   const newPage = out.addPage([sizeView.width, sizeView.height]);
   newPage.drawImage(jpg, { x: 0, y: 0, width: sizeView.width, height: sizeView.height });
   return newPage;
+}
+
+// =====================================================================
+// 5-4. 실제 제거 검증 (2단계)
+// =====================================================================
+// 저장한 PDF를 처음부터 다시 열어서 확인한다.
+//  ① 가린 페이지에 글자 정보가 하나도 없는가? (그림으로만 되어 있어야 한다)
+//  ② 가린 곳에 있던 글자가 결과 파일의 다른 쪽에 남아 있지는 않은가?
+//     (예: 2쪽의 이름을 가렸는데 5쪽에 같은 이름이 그대로 있는 경우 → 알려 준다)
+
+// 원본 페이지에서 가린 영역과 겹치는 '낱말'들을 모은다
+//  글자 덩어리(한 줄)를 낱말로 나누고, 글자 수 비율로 각 낱말의 위치를 어림잡아
+//  가림 상자와 겹치는 낱말만 고른다. 예: "성명: 홍길동 전화: 010-…" 에서 이름만 가렸다면 → ["홍길동"]
+async function hiddenTextsOf(file, index, masks) {
+  const page = await file.pdf.getPage(index + 1);
+  const vp = page.getViewport({ scale: 1 });   // 가림 좌표와 같은 기준(원래 회전만 반영)
+  const content = await page.getTextContent();
+  const found = [];
+  for (const item of content.items) {
+    const str = item.str || '';
+    if (!str.trim()) continue;
+    const t = pdfjsLib.Util.transform(vp.transform, item.transform);
+    const len = Math.hypot(t[0], t[1]) || 1;
+    const ux = t[0] / len, uy = t[1] / len;            // 글자가 이어지는 방향
+    const w = item.width;
+    for (const m of str.matchAll(/\S+/g)) {
+      const a = (m.index / str.length) * w;             // 낱말 시작 위치
+      const b = ((m.index + m[0].length) / str.length) * w; // 낱말 끝 위치
+      const pts = [
+        [t[4] + ux * a, t[5] + uy * a], [t[4] + ux * b, t[5] + uy * b],
+        [t[4] + ux * a + t[2], t[5] + uy * a + t[3]], [t[4] + ux * b + t[2], t[5] + uy * b + t[3]],
+      ];
+      const xs = pts.map((q) => q[0] / vp.width), ys = pts.map((q) => q[1] / vp.height);
+      const r = { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+      const hit = masks.some((k) => r.x0 < k.x + k.w && r.x1 > k.x && r.y0 < k.y + k.h && r.y1 > k.y);
+      if (hit) found.push(m[0]);
+    }
+  }
+  return [...new Set(found)];
+}
+
+const squash = (t) => t.replace(/\s+/g, '');
+
+async function verifyRedaction(bytes, redacted) {
+  const task = pdfjsLib.getDocument({ ...PDFJS_OPTIONS, data: bytes.slice() });
+  const doc = await task.promise;
+  try {
+    // 결과 파일 모든 쪽의 글자를 모은다
+    const texts = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const tc = await (await doc.getPage(i)).getTextContent();
+      texts.push(tc.items.map((it) => it.str || '').join(''));
+    }
+
+    // ① 가린 쪽에 글자 정보가 남았는가
+    const textLeft = redacted.filter((r) => squash(texts[r.outIndex]).length > 0);
+
+    // ② 가린 글자가 다른 쪽에 남아 있는가 (두 글자 이상만 검사)
+    const elsewhere = [];
+    const hiddenAll = [...new Set(redacted.flatMap((r) => r.hidden))].map(squash).map((t) => t.replace(/[:：,.()\[\]]+$/g, '')).filter((t) => t.length >= 2);
+    for (const h of hiddenAll) {
+      const pages = texts.map((t, i) => (squash(t).includes(h) ? i + 1 : 0)).filter(Boolean);
+      if (pages.length) elsewhere.push({ text: h, pages });
+    }
+    return { ok: textLeft.length === 0, textLeft, elsewhere, hiddenCount: hiddenAll.length };
+  } finally {
+    task.destroy();
+  }
 }
 
 // 만든 PDF를 사용자 기기에 내려받게 한다 (서버를 거치지 않는다)

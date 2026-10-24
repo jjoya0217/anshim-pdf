@@ -298,7 +298,7 @@ main { padding-top: 20px; padding-bottom: 20px; }
 }
 .toolbar-btns {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 4px;
 }
 .toolbar-btns button {
@@ -362,3 +362,109 @@ body { padding-bottom: 120px; }
 .btn-primary:disabled { opacity: 0.6; cursor: default; }
 .msg.warn { color: #9a5b00; font-weight: 600; }
 .msg.good { color: var(--ok); font-weight: 600; }
+
+.toolbar-btns button.accent:not(:disabled) { color: #fff; background: var(--brand); border-color: var(--brand); }
+body { padding-bottom: 170px; }
+
+/* ---------- 미리보기 위 가림 표시 ---------- */
+.sheet { position: relative; display: inline-block; line-height: 0; max-width: 100%; max-height: 100%; }
+.sheet canvas { display: block; width: 100%; height: auto; }
+.mask {
+  position: absolute;
+  outline: 1px dashed #c8412f;   /* 화면 표시용 테두리 (저장 파일에는 들어가지 않음) */
+}
+.mask-count {
+  background: #2b2f36;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+/* ---------- 가리기 화면 ---------- */
+.editor {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: #2b2f36;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+}
+.editor[hidden] { display: none; }
+.ed-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #1f2329;
+}
+.ed-top strong { flex: 1; text-align: center; }
+.ed-nav, .ed-done, .ed-btns button, .swatch {
+  font: inherit;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.ed-nav {
+  width: 40px; height: 40px;
+  background: #3a3f48; color: #fff; border: 0;
+}
+.ed-nav:disabled { opacity: 0.3; }
+.ed-done {
+  padding: 8px 18px;
+  background: var(--brand); color: #fff; border: 0; font-weight: 700;
+}
+.ed-colors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+.ed-colors > span { margin-right: 4px; opacity: 0.8; flex: none; }
+.swatch {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  background: #3a3f48; color: #fff;
+  border: 2px solid transparent;
+  font-size: 0.85rem;
+  flex: none;
+}
+.swatch i { width: 16px; height: 16px; border-radius: 3px; border: 1px solid #888; }
+.swatch.on { border-color: #7fd1b5; background: #2f4a42; }
+.sw-black { background: #000000; }
+.sw-gray { background: #808080; }
+.sw-white { background: #ffffff; }
+
+.ed-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  overflow: hidden;
+}
+.ed-sheet { position: relative; line-height: 0; box-shadow: 0 2px 12px rgba(0,0,0,0.5); }
+.ed-sheet canvas { display: block; background: #fff; }
+.ed-layer {
+  position: absolute;
+  inset: 0;
+  touch-action: none;          /* 그리는 동안 화면이 스크롤되지 않게 */
+  cursor: crosshair;
+}
+.ed-layer .mask { outline: 2px dashed #ff6b57; }
+.ed-layer .mask.sel { outline: 3px solid #4fc3ff; }
+.ed-layer .mask.drawing { opacity: 0.6; }
+
+.ed-bottom { padding: 8px 12px 12px; background: #1f2329; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+.ed-hint { margin: 0 0 8px; font-size: 0.8rem; opacity: 0.8; line-height: 1.4; }
+.ed-btns { display: flex; gap: 8px; }
+.ed-btns button {
+  flex: 1;
+  padding: 10px;
+  background: #3a3f48; color: #fff; border: 0;
+  font-size: 0.85rem;
+}
+.ed-btns button:disabled { opacity: 0.35; }

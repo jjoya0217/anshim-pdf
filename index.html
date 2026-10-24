@@ -24,7 +24,7 @@
   ">
 
   <title>안심 PDF 도구</title>
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
   <header class="top">
@@ -106,6 +106,7 @@
         <button type="button" class="link-btn" data-act="clearSel">선택 해제</button>
       </div>
       <div class="toolbar-btns">
+        <button type="button" data-act="mask" class="accent"><span>▬</span>가리기</button>
         <button type="button" data-act="rotL"><span>↺</span>왼쪽</button>
         <button type="button" data-act="rotR"><span>↻</span>오른쪽</button>
         <button type="button" data-act="prev"><span>◀</span>앞으로</button>
@@ -117,12 +118,41 @@
     </div>
   </div>
 
+  <!-- 개인정보 가리기 화면 (2단계) -->
+  <div class="editor" id="editor" hidden>
+    <div class="ed-top">
+      <button type="button" class="ed-nav" id="edPrev" aria-label="이전 쪽">◀</button>
+      <strong id="edTitle">1쪽 가리기</strong>
+      <button type="button" class="ed-nav" id="edNext" aria-label="다음 쪽">▶</button>
+      <button type="button" class="ed-done" id="edDone">완료</button>
+    </div>
+    <div class="ed-colors" role="radiogroup" aria-label="가리는 색">
+      <span>가리는 색</span>
+      <button type="button" class="swatch on" data-color="#000000"><i class="sw-black"></i>검은색</button>
+      <button type="button" class="swatch" data-color="#808080"><i class="sw-gray"></i>회색</button>
+      <button type="button" class="swatch" data-color="#ffffff"><i class="sw-white"></i>흰색</button>
+    </div>
+    <div class="ed-stage" id="edStage">
+      <div class="ed-sheet" id="edSheet">
+        <canvas id="edCanvas"></canvas>
+        <div class="ed-layer" id="edLayer"></div>
+      </div>
+    </div>
+    <div class="ed-bottom">
+      <p class="ed-hint" id="edHint">가릴 곳을 손가락으로 끌어서 상자를 그리세요. 그린 상자를 누르면 선택됩니다.</p>
+      <div class="ed-btns">
+        <button type="button" id="edDelSel" disabled>선택 상자 삭제</button>
+        <button type="button" id="edClear">이 쪽 가림 모두 삭제</button>
+      </div>
+    </div>
+  </div>
+
   <footer class="wrap foot">
     안심 PDF 도구 · 1단계 개발 중
   </footer>
 
   <!-- 라이브러리는 모두 이 웹앱 폴더(lib) 안에 들어 있다. 외부 CDN을 쓰지 않는다. -->
   <script src="lib/pdf-lib/pdf-lib.min.js"></script>
-  <script type="module" src="app.js?v=8"></script>
+  <script type="module" src="app.js?v=9"></script>
 </body>
 </html>
