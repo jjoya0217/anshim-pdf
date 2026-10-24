@@ -153,8 +153,36 @@ main { padding-top: 20px; padding-bottom: 20px; }
   display: grid;
   place-items: center;
 }
-.file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.file-meta { flex: none; color: var(--muted); font-size: 0.85rem; }
+.file-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.file-name { overflow-wrap: anywhere; }
+.file-meta { color: var(--muted); font-size: 0.85rem; }
+
+/* 파일 순서 이동·빼기 버튼 (손가락으로 누르기 쉽게 40px) */
+.file-btns { flex: none; display: flex; gap: 4px; }
+.icon-btn {
+  width: 40px; height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.icon-btn:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.icon-btn:disabled { opacity: 0.3; cursor: default; }
+.icon-btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+/* 방금 옮긴 파일을 잠깐 강조 */
+.file-list li.flash { animation: flash 0.9s ease-out; }
+@keyframes flash {
+  from { background: var(--brand-soft); }
+  to { background: transparent; }
+}
 
 /* ---------- 페이지 미리보기 ---------- */
 .page-grid {

@@ -26,7 +26,7 @@ const PDFJS_OPTIONS = {
 // =====================================================================
 // 1. 작업 상태 (메모리에만 있음)
 // =====================================================================
-//  files: 불러온 파일 목록  { id, label, name, size, bytes, pdf, pageCount }
+//  files: 불러온 파일 목록  { id, name, size, bytes, pdf, pageCount }
 //    - bytes: 원본 파일 데이터. 나중에 pdf-lib로 병합·저장할 때 쓴다.
 //    - pdf  : PDF.js가 연 문서. 미리보기를 그릴 때 쓴다.
 //  pages: 화면에 보이는 페이지 순서 { fileId, index }
@@ -131,19 +131,19 @@ async function addFiles(fileList) {
 
       // (2) PDF.js로 연다.
       //     PDF.js는 넘겨받은 데이터를 워커로 옮기며 비워 버리므로 복사본을 넘긴다.
-      const pdf = await pdfjsLib.getDocument({ ...PDFJS_OPTIONS, data: bytes.slice() }).promise;
+      const task = pdfjsLib.getDocument({ ...PDFJS_OPTIONS, data: bytes.slice() });
+      const pdf = await task.promise;
 
       const id = nextFileId++;
       state.files.push({
         id,
-        label: fileLabel(id),
-        colorClass: 'c' + (id % 6),
         name: file.name,
         size: bytes.length,        // 사진은 변환 후 PDF 크기 (10MB 판정에 쓰이는 실제 크기)
         originalSize: file.size,
         fromImage,
         bytes,
         pdf,
+        task,                      // 나중에 메모리를 정리할 때 쓴다
         pageCount: pdf.numPages,
       });
       for (let i = 0; i < pdf.numPages; i++) {
@@ -248,18 +248,85 @@ function explainError(err) {
   return '파일을 여는 중 문제가 생겼습니다.';
 }
 
+// =====================================================================
+// 4-2. 파일 정리: 순서 바꾸기, 하나씩 지우기, 모두 지우기
+// =====================================================================
+
+// 파일 목록의 버튼은 목록 전체에서 한 번에 받는다(이벤트 위임).
+// 버튼마다 data-act(무엇을)와 data-id(어떤 파일)를 붙여 두었다.
+els.fileList.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  if (btn.dataset.act === 'up') moveFile(id, -1);
+  if (btn.dataset.act === 'down') moveFile(id, +1);
+  if (btn.dataset.act === 'remove') removeFile(id);
+});
+
+// 파일 순서를 한 칸 옮긴다 (dir: -1 = 위로, +1 = 아래로)
+function moveFile(id, dir) {
+  const from = state.files.findIndex((f) => f.id === id);
+  const to = from + dir;
+  if (to < 0 || to >= state.files.length) return;
+
+  // 1) 파일 목록에서 자리 바꾸기
+  const [file] = state.files.splice(from, 1);
+  state.files.splice(to, 0, file);
+
+  // 2) 페이지도 파일 순서대로 다시 모으기 (같은 파일 안의 페이지 순서는 그대로)
+  const order = new Map(state.files.map((f, i) => [f.id, i]));
+  state.pages = state.pages
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => order.get(a.p.fileId) - order.get(b.p.fileId) || a.i - b.i)
+    .map((x) => x.p);
+
+  render();
+  // 옮긴 파일이 화면에서 눈에 띄도록 잠깐 강조한다
+  const li = els.fileList.querySelector(`li[data-id="${id}"]`);
+  li?.classList.add('flash');
+}
+
+// 파일 하나와 그 파일의 페이지를 모두 지운다
+function removeFile(id) {
+  const file = state.files.find((f) => f.id === id);
+  if (!file) return;
+  if (!confirm(`"${file.name}" 파일을 목록에서 뺄까요?\n(원본 파일은 그대로 남아 있습니다.)`)) return;
+
+  forgetFile(file);
+  state.files = state.files.filter((f) => f.id !== id);
+  state.pages = state.pages.filter((p) => p.fileId !== id);
+  render();
+  showMsg(`"${file.name}" 파일을 뺐습니다.`);
+}
+
 // 모두 지우기
 els.clearBtn.addEventListener('click', () => {
-  for (const f of state.files) f.pdf.destroy();     // PDF.js가 쓰던 메모리 정리
+  if (!confirm('불러온 파일을 모두 뺄까요?')) return;
+  state.files.forEach(forgetFile);
   state.files = [];
   state.pages = [];
   render();
   showMsg('');
 });
 
+// 파일이 쓰던 메모리(PDF.js 문서, 미리보기 그림)를 정리한다
+function forgetFile(file) {
+  file.task.destroy();
+  for (const key of thumbCache.keys()) {
+    if (key.startsWith(file.id + ':')) thumbCache.delete(key);
+  }
+}
+
 // =====================================================================
 // 5. 화면 그리기
 // =====================================================================
+
+// 파일 표시(A, B, C…)와 색은 '지금 몇 번째 파일인가'로 정한다.
+// 그래서 순서를 바꾸면 맨 위 파일이 항상 A가 된다.
+function tagOf(file) {
+  const n = state.files.indexOf(file);
+  return `<span class="file-tag c${n % 6}">${fileLabel(n)}</span>`;
+}
 
 function render() {
   renderFiles();
@@ -276,15 +343,24 @@ function renderFiles() {
     `파일 ${state.files.length}개 · 총 ${state.pages.length}쪽 · ${formatSize(totalSize)}`;
 
   els.fileList.innerHTML = '';
-  for (const f of state.files) {
+  const last = state.files.length - 1;
+  state.files.forEach((f, i) => {
     const li = document.createElement('li');
+    li.dataset.id = f.id;
     li.innerHTML = `
-      <span class="file-tag ${f.colorClass}">${f.label}</span>
-      <span class="file-name"></span>
-      <span class="file-meta">${f.fromImage ? '<span class="badge">사진→PDF</span> ' : ''}${f.pageCount}쪽 · ${formatSize(f.size)}</span>`;
+      ${tagOf(f)}
+      <div class="file-info">
+        <span class="file-name"></span>
+        <span class="file-meta">${f.fromImage ? '<span class="badge">사진→PDF</span> ' : ''}${f.pageCount}쪽 · ${formatSize(f.size)}</span>
+      </div>
+      <div class="file-btns">
+        <button type="button" class="icon-btn" data-act="up" data-id="${f.id}" ${i === 0 ? 'disabled' : ''} aria-label="위로">▲</button>
+        <button type="button" class="icon-btn" data-act="down" data-id="${f.id}" ${i === last ? 'disabled' : ''} aria-label="아래로">▼</button>
+        <button type="button" class="icon-btn danger" data-act="remove" data-id="${f.id}" aria-label="빼기">✕</button>
+      </div>`;
     li.querySelector('.file-name').textContent = f.name;   // 파일 이름은 글자 그대로 넣는다(안전)
     els.fileList.appendChild(li);
-  }
+  });
 }
 
 // 미리보기는 '화면에 보일 때' 그린다(지연 그리기).
@@ -297,6 +373,9 @@ const observer = new IntersectionObserver((entries) => {
     }
   }
 }, { rootMargin: '300px' });   // 화면에 들어오기 조금 전에 미리 그리기 시작
+
+// 한 번 그린 미리보기는 기억해 두었다가 다시 쓴다(순서를 바꿀 때 다시 그리지 않도록)
+const thumbCache = new Map();   // '파일id:페이지번호' → canvas
 
 function renderPages() {
   const has = state.pages.length > 0;
@@ -311,12 +390,13 @@ function renderPages() {
     fig.className = 'page';
     fig.innerHTML = `
       <div class="thumb" data-file="${p.fileId}" data-index="${p.index}"></div>
-      <figcaption>
-        <span class="file-tag ${file.colorClass}">${file.label}</span>
-        ${order + 1}쪽
-      </figcaption>`;
+      <figcaption>${tagOf(file)} ${order + 1}쪽</figcaption>`;
     els.pageGrid.appendChild(fig);
-    observer.observe(fig.querySelector('.thumb'));
+
+    const box = fig.querySelector('.thumb');
+    const cached = thumbCache.get(`${p.fileId}:${p.index}`);
+    if (cached) box.appendChild(cached);
+    else observer.observe(box);
   });
 }
 
@@ -336,6 +416,7 @@ async function drawThumb(box) {
     canvas.height = Math.floor(viewport.height);
 
     await page.render({ canvas, viewport }).promise;
+    thumbCache.set(`${box.dataset.file}:${box.dataset.index}`, canvas);
     box.innerHTML = '';
     box.appendChild(canvas);
   } catch {
