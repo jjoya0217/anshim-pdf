@@ -468,3 +468,27 @@ body { padding-bottom: 170px; }
   font-size: 0.85rem;
 }
 .ed-btns button:disabled { opacity: 0.35; }
+
+/* 선택한 상자: 이동 커서와 모서리 손잡이 */
+.ed-layer .mask.sel { cursor: move; }
+.handle {
+  position: absolute;
+  width: 24px; height: 24px;
+  background: #4fc3ff;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  touch-action: none;
+}
+/* 손잡이는 상자 '바깥' 모서리에 둔다.
+   (한 줄짜리 얇은 상자에서도 상자 가운데를 잡으면 이동, 손잡이를 잡으면 크기 조절이 되도록) */
+.handle.nw { left: -24px; top: -24px; cursor: nwse-resize; }
+.handle.ne { right: -24px; top: -24px; cursor: nesw-resize; }
+.handle.sw { left: -24px; bottom: -24px; cursor: nesw-resize; }
+.handle.se { right: -24px; bottom: -24px; cursor: nwse-resize; }
+/* 잡는 영역은 바깥쪽으로만 넓힌다 */
+.handle::before { content: ''; position: absolute; }
+.handle.nw::before { inset: -10px 0 0 -10px; }
+.handle.ne::before { inset: -10px -10px 0 0; }
+.handle.sw::before { inset: 0 0 -10px -10px; }
+.handle.se::before { inset: 0 -10px -10px 0; }

@@ -650,7 +650,7 @@ function maskEl(r, color) {
 const ed = {
   root: $('editor'), title: $('edTitle'), prev: $('edPrev'), next: $('edNext'), done: $('edDone'),
   stage: $('edStage'), sheet: $('edSheet'), canvas: $('edCanvas'), layer: $('edLayer'),
-  delSel: $('edDelSel'), clear: $('edClear'),
+  delSel: $('edDelSel'), clear: $('edClear'), hint: $('edHint'),
   pos: 0,              // 지금 보고 있는 페이지의 순서 (state.pages 안에서)
   selMask: -1,         // 선택한 상자 번호 (-1 = 없음)
   changed: false,
@@ -708,63 +708,138 @@ function drawEditorMasks() {
   p.masks.forEach((m, i) => {
     const el = maskEl(toDisplay(m, p.rot), m.color);
     el.dataset.i = i;
-    if (i === ed.selMask) el.classList.add('sel');
+    if (i === ed.selMask) {
+      el.classList.add('sel');
+      // 선택한 상자에는 네 모서리 손잡이를 붙인다 (끌어서 크기 조절)
+      for (const h of ['nw', 'ne', 'sw', 'se']) {
+        const handle = document.createElement('span');
+        handle.className = 'handle ' + h;
+        handle.dataset.h = h;
+        el.appendChild(handle);
+      }
+    }
     ed.layer.appendChild(el);
   });
   ed.delSel.disabled = ed.selMask < 0;
   ed.clear.disabled = p.masks.length === 0;
+  ed.hint.textContent = ed.selMask >= 0
+    ? '상자 가운데를 끌면 이동, 모서리 손잡이를 끌면 크기 조절. 빈 곳을 누르면 선택이 풀립니다.'
+    : '가릴 곳을 손가락으로 끌어서 상자를 그리세요. 그린 상자를 누르면 선택됩니다.';
 }
 
-// ---- 상자 그리기: 누르고 끌기 → 놓으면 완성 ----
+// ---- 손가락(마우스) 동작: 그리기 / 이동 / 크기 조절 ----
+//  - 빈 곳에서 끌기        → 새 상자 그리기
+//  - 상자를 누르고 끌기    → 그 상자 이동
+//  - 모서리 손잡이 끌기    → 크기 조절
+// 모든 계산은 '화면 기준' 비율 좌표로 하고, 저장할 때만 돌리기 전 기준으로 바꾼다.
 let drag = null;
+const MIN_W = 0.01, MIN_H = 0.005;   // 이보다 작은 상자는 만들지 않는다
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 function layerPoint(e) {
   const r = ed.layer.getBoundingClientRect();
   return {
-    x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
-    y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+    x: clamp01((e.clientX - r.left) / r.width),
+    y: clamp01((e.clientY - r.top) / r.height),
   };
 }
 
 ed.layer.addEventListener('pointerdown', (e) => {
-  // 이미 그린 상자를 누르면 → 선택 (그 상자의 색으로 색 버튼도 맞춘다)
+  const p = state.pages[ed.pos];
+  const start = layerPoint(e);
+  const handle = e.target.closest('.handle');
   const hit = e.target.closest('.mask');
-  if (hit && !hit.classList.contains('drawing')) {
-    ed.selMask = Number(hit.dataset.i) === ed.selMask ? -1 : Number(hit.dataset.i);
-    if (ed.selMask >= 0) setMaskColor(state.pages[ed.pos].masks[ed.selMask].color, false);
-    drawEditorMasks();
+  ed.layer.setPointerCapture(e.pointerId);
+
+  if (handle || hit) {
+    // 기존 상자: 선택하고, 이동 또는 크기 조절 준비
+    const i = Number(hit.dataset.i);
+    if (ed.selMask !== i) {
+      ed.selMask = i;
+      setMaskColor(p.masks[i].color, false);
+      drawEditorMasks();
+    }
+    drag = {
+      mode: handle ? 'resize' : 'move',
+      corner: handle?.dataset.h,
+      start,
+      orig: toDisplay(p.masks[i], p.rot),   // 끌기 시작할 때의 화면 위치
+      i,
+      moved: false,
+    };
     return;
   }
-  ed.layer.setPointerCapture(e.pointerId);
-  const start = layerPoint(e);
+
+  // 빈 곳: 새 상자 그리기 시작
   const el = maskEl({ x: start.x, y: start.y, w: 0, h: 0 }, maskColor);
   el.classList.add('drawing');
   ed.layer.appendChild(el);
-  drag = { start, el, rect: null };
+  drag = { mode: 'draw', start, el, rect: null };
 });
 
 ed.layer.addEventListener('pointermove', (e) => {
   if (!drag) return;
   const pt = layerPoint(e);
-  const r = {
-    x: Math.min(drag.start.x, pt.x), y: Math.min(drag.start.y, pt.y),
-    w: Math.abs(pt.x - drag.start.x), h: Math.abs(pt.y - drag.start.y),
-  };
-  Object.assign(drag.el.style, {
+  const dx = pt.x - drag.start.x;
+  const dy = pt.y - drag.start.y;
+  let r;
+
+  if (drag.mode === 'draw') {
+    r = {
+      x: Math.min(drag.start.x, pt.x), y: Math.min(drag.start.y, pt.y),
+      w: Math.abs(dx), h: Math.abs(dy),
+    };
+    drag.rect = r;
+    setBoxStyle(drag.el, r);
+    return;
+  }
+
+  const o = drag.orig;
+  if (drag.mode === 'move') {
+    // 페이지 밖으로 나가지 않도록 위치를 제한한다
+    r = {
+      x: Math.min(1 - o.w, Math.max(0, o.x + dx)),
+      y: Math.min(1 - o.h, Math.max(0, o.y + dy)),
+      w: o.w, h: o.h,
+    };
+  } else {
+    // 크기 조절: 잡은 모서리만 움직이고, 반대쪽 모서리는 고정
+    let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
+    if (drag.corner.includes('w')) x0 = Math.min(clamp01(x0 + dx), x1 - MIN_W);
+    if (drag.corner.includes('e')) x1 = Math.max(clamp01(x1 + dx), x0 + MIN_W);
+    if (drag.corner.includes('n')) y0 = Math.min(clamp01(y0 + dy), y1 - MIN_H);
+    if (drag.corner.includes('s')) y1 = Math.max(clamp01(y1 + dy), y0 + MIN_H);
+    r = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+  drag.moved = true;
+  const p = state.pages[ed.pos];
+  Object.assign(p.masks[drag.i], toBase(r, p.rot));   // 색은 그대로 두고 위치만 바꾼다
+  setBoxStyle(ed.layer.querySelector(`.mask[data-i="${drag.i}"]`), r);
+});
+
+function setBoxStyle(el, r) {
+  Object.assign(el.style, {
     left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%',
   });
-  drag.rect = r;
-});
+}
 
 function endDrag() {
   if (!drag) return;
-  const r = drag.rect;
+  const d = drag;
   drag = null;
-  // 너무 작은 상자(실수로 톡 친 경우)는 버린다
-  if (r && r.w > 0.01 && r.h > 0.005) {
-    const p = state.pages[ed.pos];
-    p.masks.push({ ...toBase(r, p.rot), color: maskColor });
-    ed.selMask = -1;
+
+  if (d.mode === 'draw') {
+    const r = d.rect;
+    if (r && r.w > MIN_W && r.h > MIN_H) {
+      // 새 상자 완성 → 바로 선택해 두어 곧바로 옮기거나 크기를 고칠 수 있게
+      const p = state.pages[ed.pos];
+      p.masks.push({ ...toBase(r, p.rot), color: maskColor });
+      ed.selMask = p.masks.length - 1;
+      ed.changed = true;
+    } else {
+      ed.selMask = -1;   // 빈 곳을 톡 누름 → 선택 풀기
+    }
+  } else if (d.moved) {
     ed.changed = true;
   }
   drawEditorMasks();
