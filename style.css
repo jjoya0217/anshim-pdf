@@ -1,3 +1,17 @@
+/* 한글 글꼴 (나눔고딕, SIL OFL). 글씨 기능을 쓸 때만 내려받는다 (같은 웹앱 폴더에서) */
+@font-face {
+  font-family: 'AnshimNanum';
+  src: url('lib/fonts/NanumGothic-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'AnshimNanum';
+  src: url('lib/fonts/NanumGothic-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-display: swap;
+}
+
 /* 안심 PDF 도구 - 기본 화면 스타일 */
 
 :root {
@@ -533,3 +547,70 @@ body { padding-bottom: 170px; }
 .chip small { color: var(--muted); font-size: 0.75rem; }
 .chip:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
 .chip input { accent-color: var(--brand); margin: 0; }
+
+
+/* ---------- 글씨·도형 (4단계-②) ---------- */
+.items-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.items-svg.drawing { opacity: 0.7; }
+.item-count {
+  background: #1565c0;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.item-hit { position: absolute; }
+.item-hit.sel { outline: 2px dashed #4fc3ff; cursor: move; }
+.item-hit.line-sel { outline: 1px dashed rgba(79, 195, 255, 0.6); }
+.handle.pt { transform: translate(-50%, -50%); cursor: grab; }
+.handle.pt::before { inset: -10px; }
+
+.ed-tools {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tool {
+  flex: none;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: #3a3f48;
+  color: #fff;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.tool.on { background: #4fc3ff; color: #102030; font-weight: 700; }
+.tool.tool-mask.on { background: #f0f0f0; color: #111; }
+.ed-props {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 6px;
+  overflow-x: auto;
+}
+.ed-props[hidden] { display: none; }
+.prop {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid #4a505a;
+  border-radius: 8px;
+  background: #2b2f36;
+  color: #fff;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.prop.on { background: #2f4a42; border-color: #7fd1b5; }
+.prop-val { min-width: 40px; text-align: center; font-size: 0.85rem; }

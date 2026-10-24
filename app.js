@@ -162,7 +162,7 @@ async function addFiles(fileList) {
         pageCount: pdf.numPages,
       });
       for (let i = 0; i < pdf.numPages; i++) {
-        state.pages.push({ fileId: id, index: i, key: `${id}:${i}`, rot: 0, masks: [] });
+        state.pages.push({ fileId: id, index: i, key: `${id}:${i}`, rot: 0, masks: [], items: [] });
       }
       added++;
     } catch (err) {
@@ -423,7 +423,7 @@ function renderPages() {
       <div class="thumb" data-key="${p.key}">
         <span class="check" aria-hidden="true">✓</span>
       </div>
-      <figcaption>${tagOf(file)} ${order + 1}쪽${p.rot ? ` <span class="rot">↻${p.rot}°</span>` : ''}${p.masks.length ? ` <span class="mask-count">가림 ${p.masks.length}</span>` : ''}</figcaption>`;
+      <figcaption>${tagOf(file)} ${order + 1}쪽${p.rot ? ` <span class="rot">↻${p.rot}°</span>` : ''}${p.masks.length ? ` <span class="mask-count">가림 ${p.masks.length}</span>` : ''}${p.items.length ? ` <span class="item-count">편집 ${p.items.length}</span>` : ''}</figcaption>`;
     els.pageGrid.appendChild(fig);
 
     const box = fig.querySelector('.thumb');
@@ -440,6 +440,7 @@ function showSheet(box, canvas, p) {
   sheet.className = 'sheet';
   sheet.appendChild(canvas);
   for (const m of p.masks) sheet.appendChild(maskEl(toDisplay(m, p.rot), m.color));
+  if (p.items.length) sheet.appendChild(itemsSvg(p));
   box.appendChild(sheet);
 }
 
@@ -461,6 +462,8 @@ async function drawThumb(box) {
     canvas.height = Math.floor(viewport.height);
 
     await page.render({ canvas, viewport }).promise;
+    const sv = page.getViewport({ scale: 1 });   // 글씨 크기 계산용 페이지 크기 기억
+    (file.sizes ||= [])[p.index] = { w: sv.width, h: sv.height };
     thumbCache.set(thumbKey(p), canvas);
     showSheet(box, canvas, p);
   } catch {
@@ -509,9 +512,14 @@ els.toolbar.addEventListener('click', (e) => {
   if (act === 'clearSel') { selected.clear(); renderPages(); }
 });
 
+// 페이지 하나를 통째로 복사 (가림 상자·글씨·도형까지)
+function copyPage(p) {
+  return { ...p, masks: p.masks.map((m) => ({ ...m })), items: p.items.map((it) => ({ ...it })) };
+}
+
 // 바꾸기 직전의 페이지 목록을 기록해 둔다 (페이지 객체도 복사: 회전값이 바뀌므로)
 function remember() {
-  history.push(state.pages.map((p) => ({ ...p, masks: p.masks.map((m) => ({ ...m })) })));
+  history.push(state.pages.map(copyPage));
   if (history.length > HISTORY_MAX) history.shift();
 }
 
@@ -620,16 +628,46 @@ function renderToolbar() {
 }
 
 // =====================================================================
-// 5-3. 개인정보 가리기 (2단계)
+// 5-3. 편집 화면: 개인정보 가리기(2단계) + 글씨·도형 추가(4단계-②)
 // =====================================================================
-// 가린 영역은 페이지 크기에 대한 비율(0~1)로 저장한다. 예: { x: 0.1, y: 0.2, w: 0.3, h: 0.05 }
+// 위치는 페이지 크기에 대한 비율(0~1)로 저장한다. 예: { x: 0.1, y: 0.2, w: 0.3, h: 0.05 }
 // 기준은 '사용자가 돌리기 전' 페이지 모습이다. 그래서 나중에 페이지를 돌려도
-// 가린 위치가 어긋나지 않는다. 화면에 보여 줄 때만 돌린 각도만큼 변환한다.
+// 위치가 어긋나지 않는다. 화면에 보여 줄 때만 돌린 각도만큼 변환한다.
+//
+//  p.masks : 가린 영역  { x, y, w, h, color }            → 저장할 때 아래 내용까지 실제로 지운다
+//  p.items : 글씨·도형
+//     사각형·원·형광펜 { type: 'rect'|'ellipse'|'highlight', x, y, w, h, color, width }
+//     선·화살표        { type: 'line'|'arrow', x1, y1, x2, y2, color, width }
+//     글씨             { type: 'text', x, y, rot0, size, color, bold, text }
+//        - x, y  : 글씨 상자 왼쪽 위 (돌리기 전 기준 비율)
+//        - rot0  : 글씨를 넣을 때 페이지가 돌아가 있던 각도 (그때 화면에서 똑바로 보이도록)
+//        - size  : 글자 크기 (pt, PDF 단위)
 
-const MASK_COLORS = { '#000000': '검은색', '#808080': '회색', '#ffffff': '흰색' };
-let maskColor = '#000000';
+const TEXT_FONT = 'AnshimNanum';   // style.css의 @font-face 이름 (나눔고딕)
+const TEXT_ASC = 0.85;             // 글씨 상자 위쪽 → 첫 줄 기준선까지 (글자 크기에 대한 비율)
+const TEXT_LH = 1.3;               // 줄 간격 (글자 크기에 대한 비율)
+const HL_OPACITY = 0.35;           // 형광펜 투명도
 
-// 비율 좌표를 시계 방향으로 90도씩 돌린다 (돌리기 전 → 화면)
+const TOOLS = {
+  mask:      { name: '가리기', colors: [['#000000', '검은색'], ['#808080', '회색'], ['#ffffff', '흰색']] },
+  text:      { name: '글씨',   colors: [['#111111', '검정'], ['#d32f2f', '빨강'], ['#1565c0', '파랑'], ['#2e7d32', '초록']] },
+  rect:      { name: '사각형', colors: [['#d32f2f', '빨강'], ['#1565c0', '파랑'], ['#111111', '검정'], ['#2e7d32', '초록']] },
+  ellipse:   { name: '원',     colors: [['#d32f2f', '빨강'], ['#1565c0', '파랑'], ['#111111', '검정'], ['#2e7d32', '초록']] },
+  line:      { name: '선',     colors: [['#d32f2f', '빨강'], ['#1565c0', '파랑'], ['#111111', '검정'], ['#2e7d32', '초록']] },
+  arrow:     { name: '화살표', colors: [['#d32f2f', '빨강'], ['#1565c0', '파랑'], ['#111111', '검정'], ['#2e7d32', '초록']] },
+  highlight: { name: '형광펜', colors: [['#ffeb3b', '노랑'], ['#76ff03', '연두'], ['#ff80ab', '분홍']] },
+};
+const WIDTHS = [['1', '가늘게'], ['2', '보통'], ['4', '굵게']];   // 선 굵기 (pt)
+const toolState = {
+  tool: 'mask',
+  color: { mask: '#000000', text: '#111111', rect: '#d32f2f', ellipse: '#d32f2f', line: '#d32f2f', arrow: '#d32f2f', highlight: '#ffeb3b' },
+  width: 2,
+  size: 14,
+  bold: false,
+};
+
+// ---- 좌표 변환 (돌리기 전 기준 ↔ 화면 기준) ----
+// 상자: 시계 방향으로 90도씩 돌린다 (돌리기 전 → 화면)
 function toDisplay(r, rot) {
   let { x, y, w, h } = r;
   for (let k = 0; k < rot / 90; k++) [x, y, w, h] = [1 - (y + h), x, h, w];
@@ -641,36 +679,172 @@ function toBase(r, rot) {
   for (let k = 0; k < rot / 90; k++) [x, y, w, h] = [y, 1 - (x + w), h, w];
   return { x, y, w, h };
 }
+// 점 하나
+function ptToDisplay(x, y, rot) {
+  for (let k = 0; k < rot / 90; k++) [x, y] = [1 - y, x];
+  return { x, y };
+}
+function ptToBase(x, y, rot) {
+  for (let k = 0; k < rot / 90; k++) [x, y] = [y, 1 - x];
+  return { x, y };
+}
 
 // 가림 상자 하나를 화면 요소로 만든다 (위치는 % 단위)
 function maskEl(r, color) {
   const div = document.createElement('div');
   div.className = 'mask';
-  div.style.left = r.x * 100 + '%';
-  div.style.top = r.y * 100 + '%';
-  div.style.width = r.w * 100 + '%';
-  div.style.height = r.h * 100 + '%';
+  setBoxStyle(div, r);
   div.style.background = color;
   return div;
 }
 
+function setBoxStyle(el, r) {
+  Object.assign(el.style, {
+    left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%',
+  });
+}
+
+// ---- 페이지 크기 (pt) : 글씨 크기를 비율로 바꿀 때 필요 ----
+// 미리보기를 그릴 때 file.sizes에 기억해 둔다. { w, h } = 돌리기 전(원래 회전만 반영) 크기
+function baseSize(p) {
+  const file = state.files.find((f) => f.id === p.fileId);
+  return file?.sizes?.[p.index] || { w: 595.28, h: 841.89 };
+}
+async function ensureSize(p) {
+  const file = state.files.find((f) => f.id === p.fileId);
+  file.sizes ||= [];
+  if (!file.sizes[p.index]) {
+    const page = await file.pdf.getPage(p.index + 1);
+    const v = page.getViewport({ scale: 1 });
+    file.sizes[p.index] = { w: v.width, h: v.height };
+  }
+  return file.sizes[p.index];
+}
+
+// 글씨 줄 너비 재기 (pt). 같은 글꼴로 재므로 화면과 저장 파일의 크기가 같다.
+const measureCtx = document.createElement('canvas').getContext('2d');
+function textBoxPt(it) {
+  measureCtx.font = `${it.bold ? 700 : 400} ${it.size}px ${TEXT_FONT}`;
+  const lines = it.text.split('\n');
+  const w = Math.max(...lines.map((l) => measureCtx.measureText(l).width), it.size * 0.5);
+  return { w, h: lines.length * it.size * TEXT_LH, lines };
+}
+
+// 글씨의 화면 정보: 왼쪽 위 점(화면 비율), 화면에서의 시계 방향 각도, 차지하는 상자(화면 비율)
+function textDisplayGeom(it, p) {
+  const bs = baseSize(p);
+  const dims = p.rot % 180 ? { w: bs.h, h: bs.w } : bs;          // 화면 기준 페이지 크기(pt)
+  const a = ptToDisplay(it.x, it.y, p.rot);
+  const ang = (((p.rot - it.rot0) % 360) + 360) % 360;             // 화면에서 시계 방향 각도
+  const box = textBoxPt(it);
+  const rad = (ang * Math.PI) / 180;
+  const ux = Math.cos(rad), uy = Math.sin(rad);                    // 글자가 이어지는 방향
+  const vx = -Math.sin(rad), vy = Math.cos(rad);                   // 아래쪽 방향
+  const ax = a.x * dims.w, ay = a.y * dims.h;
+  const pts = [[0, 0], [box.w, 0], [0, box.h], [box.w, box.h]].map(([s, t]) => [ax + ux * s + vx * t, ay + uy * s + vy * t]);
+  const xs = pts.map((q) => q[0] / dims.w), ys = pts.map((q) => q[1] / dims.h);
+  return {
+    dims, ang, box, ax, ay, ux, uy, vx, vy,
+    bbox: { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) },
+  };
+}
+
+// 항목이 화면에서 차지하는 상자 (선택·이동용)
+function itemDisplayBox(it, p) {
+  if (it.type === 'text') return textDisplayGeom(it, p).bbox;
+  if (it.type === 'line' || it.type === 'arrow') {
+    const a = ptToDisplay(it.x1, it.y1, p.rot), b = ptToDisplay(it.x2, it.y2, p.rot);
+    const pad = 0.012;
+    const x0 = Math.min(a.x, b.x) - pad, y0 = Math.min(a.y, b.y) - pad;
+    return { x: x0, y: y0, w: Math.abs(a.x - b.x) + pad * 2, h: Math.abs(a.y - b.y) + pad * 2 };
+  }
+  return toDisplay(it, p.rot);
+}
+
+// ---- 글씨·도형 그리기 (SVG): 미리보기와 편집 화면에서 함께 쓴다 ----
+const SVGNS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function itemsSvg(p) {
+  const bs = baseSize(p);
+  const dims = p.rot % 180 ? { w: bs.h, h: bs.w } : bs;
+  const svg = svgEl('svg', { viewBox: `0 0 ${dims.w} ${dims.h}`, class: 'items-svg', preserveAspectRatio: 'none' });
+  for (const it of p.items) {
+    if (it.type === 'rect' || it.type === 'ellipse' || it.type === 'highlight') {
+      const r = toDisplay(it, p.rot);
+      const x = r.x * dims.w, y = r.y * dims.h, w = r.w * dims.w, h = r.h * dims.h;
+      if (it.type === 'ellipse') {
+        svg.appendChild(svgEl('ellipse', { cx: x + w / 2, cy: y + h / 2, rx: w / 2, ry: h / 2, fill: 'none', stroke: it.color, 'stroke-width': it.width }));
+      } else if (it.type === 'rect') {
+        svg.appendChild(svgEl('rect', { x, y, width: w, height: h, fill: 'none', stroke: it.color, 'stroke-width': it.width }));
+      } else {
+        svg.appendChild(svgEl('rect', { x, y, width: w, height: h, fill: it.color, 'fill-opacity': HL_OPACITY }));
+      }
+    } else if (it.type === 'line' || it.type === 'arrow') {
+      const a = ptToDisplay(it.x1, it.y1, p.rot), b = ptToDisplay(it.x2, it.y2, p.rot);
+      const x1 = a.x * dims.w, y1 = a.y * dims.h, x2 = b.x * dims.w, y2 = b.y * dims.h;
+      svg.appendChild(svgEl('line', { x1, y1, x2, y2, stroke: it.color, 'stroke-width': it.width, 'stroke-linecap': 'round' }));
+      if (it.type === 'arrow') {
+        for (const [hx, hy] of arrowHead(x1, y1, x2, y2, it.width)) {
+          svg.appendChild(svgEl('line', { x1: x2, y1: y2, x2: hx, y2: hy, stroke: it.color, 'stroke-width': it.width, 'stroke-linecap': 'round' }));
+        }
+      }
+    } else if (it.type === 'text') {
+      const g = textDisplayGeom(it, p);
+      const t = svgEl('text', {
+        'font-family': TEXT_FONT, 'font-size': it.size, 'font-weight': it.bold ? 700 : 400, fill: it.color,
+        transform: `translate(${g.ax} ${g.ay}) rotate(${g.ang})`,
+      });
+      g.box.lines.forEach((line, k) => {
+        const ts = svgEl('tspan', { x: 0, y: it.size * (TEXT_ASC + k * TEXT_LH) });
+        ts.textContent = line;
+        t.appendChild(ts);
+      });
+      svg.appendChild(t);
+    }
+  }
+  return svg;
+}
+
+// 화살촉 두 끝점 (선 끝에서 뒤로 비스듬히)
+function arrowHead(x1, y1, x2, y2, width) {
+  const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+  const L = Math.max(8, width * 4);
+  return [
+    [x2 - ux * L - uy * L * 0.5, y2 - uy * L + ux * L * 0.5],
+    [x2 - ux * L + uy * L * 0.5, y2 - uy * L - ux * L * 0.5],
+  ];
+}
+
+// =====================================================================
+// 편집 화면
+// =====================================================================
 const ed = {
   root: $('editor'), title: $('edTitle'), prev: $('edPrev'), next: $('edNext'), done: $('edDone'),
   stage: $('edStage'), sheet: $('edSheet'), canvas: $('edCanvas'), layer: $('edLayer'),
   delSel: $('edDelSel'), clear: $('edClear'), hint: $('edHint'),
+  tools: $('edTools'), colors: $('edColors'), props: $('edProps'),
   pos: 0,              // 지금 보고 있는 페이지의 순서 (state.pages 안에서)
-  selMask: -1,         // 선택한 상자 번호 (-1 = 없음)
+  sel: null,           // 선택한 것 { kind: 'mask' | 'item', i }
   changed: false,
   renderTask: null,
 };
 
-function openEditorForSelection() {
+async function openEditorForSelection() {
   const pos = state.pages.findIndex((p) => selected.has(p.key));
   if (pos < 0) return;
-  remember();            // 되돌리기를 위해 가리기 전 상태 기록
+  remember();            // 되돌리기를 위해 편집 전 상태 기록
   ed.changed = false;
   ed.root.hidden = false;
   document.body.style.overflow = 'hidden';
+  renderToolUi();
+  // 글씨를 정확히 재려면 글꼴이 먼저 준비되어야 한다 (처음 한 번만 내려받음, 같은 웹앱 폴더에서)
+  try { await Promise.all([document.fonts.load(`400 16px ${TEXT_FONT}`), document.fonts.load(`700 16px ${TEXT_FONT}`)]); } catch { /* 글꼴이 없어도 계속 */ }
   showEditorPage(pos);
 }
 
@@ -683,13 +857,14 @@ function closeEditor() {
 
 async function showEditorPage(pos) {
   ed.pos = pos;
-  ed.selMask = -1;
+  ed.sel = null;
   const p = state.pages[pos];
   const file = state.files.find((f) => f.id === p.fileId);
   ed.title.textContent = `${pos + 1}쪽 / ${state.pages.length}쪽`;
   ed.prev.disabled = pos === 0;
   ed.next.disabled = pos === state.pages.length - 1;
 
+  await ensureSize(p);
   // 화면에 꽉 차게 (가로·세로 중 먼저 닿는 쪽에 맞춤), 선명하게 기기 화소 밀도만큼 크게 그린다
   const page = await file.pdf.getPage(p.index + 1);
   const rotation = (page.rotate + p.rot) % 360;
@@ -704,188 +879,381 @@ async function showEditorPage(pos) {
   ed.canvas.height = Math.round(view.height);
   ed.canvas.style.width = Math.round(base.width * fit) + 'px';
   ed.canvas.style.height = Math.round(base.height * fit) + 'px';
-  drawEditorMasks();
+  drawEditorLayer();
   ed.renderTask = page.render({ canvas: ed.canvas, viewport: view });
   try { await ed.renderTask.promise; } catch { /* 다른 쪽으로 넘어가며 취소된 경우 */ }
 }
 
-function drawEditorMasks() {
+const selItem = () => (ed.sel?.kind === 'item' ? state.pages[ed.pos].items[ed.sel.i] : null);
+const selMask = () => (ed.sel?.kind === 'mask' ? state.pages[ed.pos].masks[ed.sel.i] : null);
+
+// 편집 화면의 겹쳐 그리기: 가림 상자(div) → 글씨·도형(SVG) → 선택용 상자와 손잡이
+function drawEditorLayer() {
   const p = state.pages[ed.pos];
   ed.layer.innerHTML = '';
   p.masks.forEach((m, i) => {
     const el = maskEl(toDisplay(m, p.rot), m.color);
+    el.dataset.kind = 'mask';
     el.dataset.i = i;
-    if (i === ed.selMask) {
-      el.classList.add('sel');
-      // 선택한 상자에는 네 모서리 손잡이를 붙인다 (끌어서 크기 조절)
-      for (const h of ['nw', 'ne', 'sw', 'se']) {
-        const handle = document.createElement('span');
-        handle.className = 'handle ' + h;
-        handle.dataset.h = h;
-        el.appendChild(handle);
-      }
-    }
+    if (ed.sel?.kind === 'mask' && ed.sel.i === i) addHandles(el, 'corners');
     ed.layer.appendChild(el);
   });
-  ed.delSel.disabled = ed.selMask < 0;
-  ed.clear.disabled = p.masks.length === 0;
-  ed.hint.textContent = ed.selMask >= 0
-    ? '상자 가운데를 끌면 이동, 모서리 손잡이를 끌면 크기 조절. 빈 곳을 누르면 선택이 풀립니다.'
-    : '가릴 곳을 손가락으로 끌어서 상자를 그리세요. 그린 상자를 누르면 선택됩니다.';
+  ed.layer.appendChild(itemsSvg(p));
+  p.items.forEach((it, i) => {
+    const hit = document.createElement('div');
+    hit.className = 'item-hit';
+    hit.dataset.kind = 'item';
+    hit.dataset.i = i;
+    setBoxStyle(hit, itemDisplayBox(it, p));
+    if (ed.sel?.kind === 'item' && ed.sel.i === i) {
+      if (it.type === 'line' || it.type === 'arrow') addLineHandles(hit, it, p);
+      else if (it.type === 'text') hit.classList.add('sel');
+      else addHandles(hit, 'corners');
+    }
+    ed.layer.appendChild(hit);
+  });
+  ed.delSel.disabled = !ed.sel;
+  ed.clear.disabled = p.masks.length + p.items.length === 0;
+  renderProps();
+  updateHint();
 }
 
+function addHandles(el, kind) {
+  el.classList.add('sel');
+  for (const h of ['nw', 'ne', 'sw', 'se']) {
+    const handle = document.createElement('span');
+    handle.className = 'handle ' + h;
+    handle.dataset.h = h;
+    el.appendChild(handle);
+  }
+}
+
+// 선·화살표: 두 끝점에 손잡이
+function addLineHandles(hit, it, p) {
+  hit.classList.add('sel', 'line-sel');
+  const box = itemDisplayBox(it, p);
+  for (const [name, x, y] of [['p1', it.x1, it.y1], ['p2', it.x2, it.y2]]) {
+    const d = ptToDisplay(x, y, p.rot);
+    const handle = document.createElement('span');
+    handle.className = 'handle pt';
+    handle.dataset.h = name;
+    handle.style.left = ((d.x - box.x) / box.w) * 100 + '%';
+    handle.style.top = ((d.y - box.y) / box.h) * 100 + '%';
+    hit.appendChild(handle);
+  }
+}
+
+function updateHint() {
+  const t = toolState.tool;
+  let msg;
+  if (ed.sel) {
+    const it = selItem();
+    msg = it?.type === 'text'
+      ? '글씨를 끌어서 옮기세요. 아래 버튼으로 크기·굵기를 바꾸거나 내용을 고칠 수 있습니다.'
+      : it && (it.type === 'line' || it.type === 'arrow')
+        ? '선을 끌면 이동, 양 끝의 손잡이를 끌면 길이·방향을 바꿉니다.'
+        : '가운데를 끌면 이동, 모서리 손잡이를 끌면 크기 조절. 빈 곳을 누르면 선택이 풀립니다.';
+  } else if (t === 'text') {
+    msg = '글씨를 넣을 곳을 누르세요.';
+  } else if (t === 'line' || t === 'arrow') {
+    msg = '시작점에서 끝점까지 끌어서 그리세요.';
+  } else if (t === 'mask') {
+    msg = '가릴 곳을 끌어서 상자를 그리세요. 저장할 때 아래 내용까지 실제로 지워집니다.';
+  } else {
+    msg = '끌어서 그리세요. 그린 것을 누르면 선택됩니다.';
+  }
+  ed.hint.textContent = msg;
+}
+
+// ---- 도구·색·속성 단추 ----
+function renderToolUi() {
+  ed.tools.innerHTML = '';
+  for (const [key, tool] of Object.entries(TOOLS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tool' + (toolState.tool === key ? ' on' : '') + (key === 'mask' ? ' tool-mask' : '');
+    b.dataset.tool = key;
+    b.textContent = tool.name;
+    ed.tools.appendChild(b);
+  }
+  renderColorUi();
+}
+
+function renderColorUi() {
+  const tool = TOOLS[toolState.tool];
+  const current = toolState.color[toolState.tool];
+  ed.colors.innerHTML = '<span>색</span>';
+  for (const [hex, name] of tool.colors) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'swatch' + (hex === current ? ' on' : '');
+    b.dataset.color = hex;
+    const i = document.createElement('i');
+    i.style.background = hex;
+    b.append(i, name);
+    ed.colors.appendChild(b);
+  }
+}
+
+function renderProps() {
+  const t = selItem()?.type || toolState.tool;
+  ed.props.innerHTML = '';
+  const add = (label, act, on = false) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'prop' + (on ? ' on' : '');
+    b.dataset.act = act;
+    b.textContent = label;
+    ed.props.appendChild(b);
+  };
+  if (t === 'text') {
+    const it = selItem();
+    const size = it ? it.size : toolState.size;
+    const bold = it ? it.bold : toolState.bold;
+    add('가−', 'smaller');
+    const s = document.createElement('span');
+    s.className = 'prop-val';
+    s.textContent = `${size}pt`;
+    ed.props.appendChild(s);
+    add('가+', 'bigger');
+    add('굵게', 'bold', bold);
+    if (it) add('내용 고치기', 'edit');
+  } else if (t === 'rect' || t === 'ellipse' || t === 'line' || t === 'arrow') {
+    const w = selItem()?.width ?? toolState.width;
+    for (const [val, label] of WIDTHS) add(label, 'w' + val, Number(val) === w);
+  }
+  ed.props.hidden = ed.props.childElementCount === 0;
+}
+
+ed.tools.addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-tool]');
+  if (!b) return;
+  toolState.tool = b.dataset.tool;
+  ed.sel = null;
+  renderToolUi();
+  drawEditorLayer();
+});
+
+ed.colors.addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-color]');
+  if (!b) return;
+  toolState.color[toolState.tool] = b.dataset.color;
+  // 선택한 것이 있으면 그 색도 바꾼다
+  const target = selItem() || selMask();
+  if (target) {
+    target.color = b.dataset.color;
+    ed.changed = true;
+    drawEditorLayer();
+  }
+  renderColorUi();
+});
+
+ed.props.addEventListener('click', (e) => {
+  const act = e.target.closest('button[data-act]')?.dataset.act;
+  if (!act) return;
+  const it = selItem();
+  if (act === 'smaller' || act === 'bigger') {
+    const step = act === 'bigger' ? 2 : -2;
+    const next = (v) => Math.min(72, Math.max(6, v + step));
+    if (it) { it.size = next(it.size); ed.changed = true; } else toolState.size = next(toolState.size);
+  } else if (act === 'bold') {
+    if (it) { it.bold = !it.bold; ed.changed = true; } else toolState.bold = !toolState.bold;
+  } else if (act === 'edit' && it) {
+    const text = prompt('글씨 내용을 고치세요. (줄을 바꾸려면 \\n 을 쓰세요)', it.text.replace(/\n/g, '\\n'));
+    if (text !== null && text.trim()) { it.text = text.replace(/\\n/g, '\n'); ed.changed = true; }
+  } else if (act.startsWith('w')) {
+    const w = Number(act.slice(1));
+    if (it) { it.width = w; ed.changed = true; }
+    toolState.width = w;
+  }
+  drawEditorLayer();
+});
+
 // ---- 손가락(마우스) 동작: 그리기 / 이동 / 크기 조절 ----
-//  - 빈 곳에서 끌기        → 새 상자 그리기
-//  - 상자를 누르고 끌기    → 그 상자 이동
-//  - 모서리 손잡이 끌기    → 크기 조절
-// 모든 계산은 '화면 기준' 비율 좌표로 하고, 저장할 때만 돌리기 전 기준으로 바꾼다.
 let drag = null;
 const MIN_W = 0.01, MIN_H = 0.005;   // 이보다 작은 상자는 만들지 않는다
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 function layerPoint(e) {
   const r = ed.layer.getBoundingClientRect();
-  return {
-    x: clamp01((e.clientX - r.left) / r.width),
-    y: clamp01((e.clientY - r.top) / r.height),
-  };
+  return { x: clamp01((e.clientX - r.left) / r.width), y: clamp01((e.clientY - r.top) / r.height) };
 }
 
 ed.layer.addEventListener('pointerdown', (e) => {
   const p = state.pages[ed.pos];
   const start = layerPoint(e);
   const handle = e.target.closest('.handle');
-  const hit = e.target.closest('.mask');
+  const hit = e.target.closest('[data-kind]');
   ed.layer.setPointerCapture(e.pointerId);
 
-  if (handle || hit) {
-    // 기존 상자: 선택하고, 이동 또는 크기 조절 준비
-    const i = Number(hit.dataset.i);
-    if (ed.selMask !== i) {
-      ed.selMask = i;
-      setMaskColor(p.masks[i].color, false);
-      drawEditorMasks();
+  if (hit) {
+    // 이미 있는 것: 선택하고, 이동 또는 크기 조절 준비
+    const kind = hit.dataset.kind, i = Number(hit.dataset.i);
+    if (ed.sel?.kind !== kind || ed.sel.i !== i) {
+      ed.sel = { kind, i };
+      const obj = kind === 'mask' ? p.masks[i] : p.items[i];
+      toolState.tool = kind === 'mask' ? 'mask' : obj.type;   // 그 종류에 맞는 색 단추를 보여 준다
+      toolState.color[toolState.tool] = obj.color;
+      renderToolUi();
+      drawEditorLayer();
     }
-    drag = {
-      mode: handle ? 'resize' : 'move',
-      corner: handle?.dataset.h,
-      start,
-      orig: toDisplay(p.masks[i], p.rot),   // 끌기 시작할 때의 화면 위치
-      i,
-      moved: false,
-    };
+    const obj = kind === 'mask' ? p.masks[i] : p.items[i];
+    drag = { mode: handle ? 'resize' : 'move', corner: handle?.dataset.h, start, orig: JSON.parse(JSON.stringify(obj)), kind, i, moved: false };
     return;
   }
 
-  // 빈 곳: 새 상자 그리기 시작
-  const el = maskEl({ x: start.x, y: start.y, w: 0, h: 0 }, maskColor);
-  el.classList.add('drawing');
-  ed.layer.appendChild(el);
-  drag = { mode: 'draw', start, el, rect: null };
+  ed.sel = null;
+  const tool = toolState.tool;
+  if (tool === 'text') {
+    drag = null;
+    addTextAt(start);
+    return;
+  }
+  // 빈 곳: 새로 그리기 시작
+  drag = { mode: 'draw', tool, start, end: start };
+  drawPreview();
 });
 
 ed.layer.addEventListener('pointermove', (e) => {
   if (!drag) return;
   const pt = layerPoint(e);
-  const dx = pt.x - drag.start.x;
-  const dy = pt.y - drag.start.y;
-  let r;
-
   if (drag.mode === 'draw') {
-    r = {
-      x: Math.min(drag.start.x, pt.x), y: Math.min(drag.start.y, pt.y),
-      w: Math.abs(dx), h: Math.abs(dy),
-    };
-    drag.rect = r;
-    setBoxStyle(drag.el, r);
+    drag.end = pt;
+    drawPreview();
     return;
   }
-
-  const o = drag.orig;
-  if (drag.mode === 'move') {
-    // 페이지 밖으로 나가지 않도록 위치를 제한한다
-    r = {
-      x: Math.min(1 - o.w, Math.max(0, o.x + dx)),
-      y: Math.min(1 - o.h, Math.max(0, o.y + dy)),
-      w: o.w, h: o.h,
-    };
-  } else {
-    // 크기 조절: 잡은 모서리만 움직이고, 반대쪽 모서리는 고정
-    let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
-    if (drag.corner.includes('w')) x0 = Math.min(clamp01(x0 + dx), x1 - MIN_W);
-    if (drag.corner.includes('e')) x1 = Math.max(clamp01(x1 + dx), x0 + MIN_W);
-    if (drag.corner.includes('n')) y0 = Math.min(clamp01(y0 + dy), y1 - MIN_H);
-    if (drag.corner.includes('s')) y1 = Math.max(clamp01(y1 + dy), y0 + MIN_H);
-    r = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-  }
-  drag.moved = true;
   const p = state.pages[ed.pos];
-  Object.assign(p.masks[drag.i], toBase(r, p.rot));   // 색은 그대로 두고 위치만 바꾼다
-  setBoxStyle(ed.layer.querySelector(`.mask[data-i="${drag.i}"]`), r);
+  const dx = pt.x - drag.start.x, dy = pt.y - drag.start.y;
+  const obj = drag.kind === 'mask' ? p.masks[drag.i] : p.items[drag.i];
+  const o = drag.orig;
+  drag.moved = true;
+
+  if (drag.kind === 'item' && (o.type === 'line' || o.type === 'arrow')) {
+    const a = ptToDisplay(o.x1, o.y1, p.rot), b = ptToDisplay(o.x2, o.y2, p.rot);
+    if (drag.mode === 'move') { a.x += dx; a.y += dy; b.x += dx; b.y += dy; }
+    else if (drag.corner === 'p1') { a.x = clamp01(a.x + dx); a.y = clamp01(a.y + dy); }
+    else { b.x = clamp01(b.x + dx); b.y = clamp01(b.y + dy); }
+    const A = ptToBase(clamp01(a.x), clamp01(a.y), p.rot), B = ptToBase(clamp01(b.x), clamp01(b.y), p.rot);
+    Object.assign(obj, { x1: A.x, y1: A.y, x2: B.x, y2: B.y });
+  } else if (drag.kind === 'item' && o.type === 'text') {
+    const a = ptToDisplay(o.x, o.y, p.rot);
+    const A = ptToBase(clamp01(a.x + dx), clamp01(a.y + dy), p.rot);
+    Object.assign(obj, { x: A.x, y: A.y });
+  } else {
+    // 가림 상자·사각형·원·형광펜
+    const r0 = toDisplay(o, p.rot);
+    let r;
+    if (drag.mode === 'move') {
+      r = { x: Math.min(1 - r0.w, Math.max(0, r0.x + dx)), y: Math.min(1 - r0.h, Math.max(0, r0.y + dy)), w: r0.w, h: r0.h };
+    } else {
+      // 크기 조절: 잡은 모서리만 움직이고, 반대쪽 모서리는 고정
+      let x0 = r0.x, y0 = r0.y, x1 = r0.x + r0.w, y1 = r0.y + r0.h;
+      if (drag.corner.includes('w')) x0 = Math.min(clamp01(x0 + dx), x1 - MIN_W);
+      if (drag.corner.includes('e')) x1 = Math.max(clamp01(x1 + dx), x0 + MIN_W);
+      if (drag.corner.includes('n')) y0 = Math.min(clamp01(y0 + dy), y1 - MIN_H);
+      if (drag.corner.includes('s')) y1 = Math.max(clamp01(y1 + dy), y0 + MIN_H);
+      r = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
+    Object.assign(obj, toBase(r, p.rot));   // 색은 그대로 두고 위치만 바꾼다
+  }
+  drawEditorLayer();
 });
 
-function setBoxStyle(el, r) {
-  Object.assign(el.style, {
-    left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%',
-  });
+// 그리는 중인 모양 미리 보여 주기
+function drawPreview() {
+  drawEditorLayer();
+  const { tool, start, end } = drag;
+  const p = state.pages[ed.pos];
+  const tmp = { ...p, masks: [], items: [] };
+  const color = toolState.color[tool];
+  if (tool === 'line' || tool === 'arrow') {
+    const A = ptToBase(start.x, start.y, p.rot), B = ptToBase(end.x, end.y, p.rot);
+    tmp.items.push({ type: tool, x1: A.x, y1: A.y, x2: B.x, y2: B.y, color, width: toolState.width });
+  } else {
+    const r = { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), w: Math.abs(end.x - start.x), h: Math.abs(end.y - start.y) };
+    if (tool === 'mask') {
+      const el = maskEl(r, color);
+      el.classList.add('drawing');
+      ed.layer.appendChild(el);
+      return;
+    }
+    tmp.items.push({ type: tool, ...toBase(r, p.rot), color, width: toolState.width });
+  }
+  const svg = itemsSvg(tmp);
+  svg.classList.add('drawing');
+  ed.layer.appendChild(svg);
 }
 
 function endDrag() {
   if (!drag) return;
   const d = drag;
   drag = null;
+  const p = state.pages[ed.pos];
 
   if (d.mode === 'draw') {
-    const r = d.rect;
-    if (r && r.w > MIN_W && r.h > MIN_H) {
-      // 새 상자 완성 → 바로 선택해 두어 곧바로 옮기거나 크기를 고칠 수 있게
-      const p = state.pages[ed.pos];
-      p.masks.push({ ...toBase(r, p.rot), color: maskColor });
-      ed.selMask = p.masks.length - 1;
-      ed.changed = true;
+    const { tool, start, end } = d;
+    const color = toolState.color[tool];
+    if (tool === 'line' || tool === 'arrow') {
+      if (Math.hypot(end.x - start.x, end.y - start.y) > 0.015) {
+        const A = ptToBase(start.x, start.y, p.rot), B = ptToBase(end.x, end.y, p.rot);
+        p.items.push({ type: tool, x1: A.x, y1: A.y, x2: B.x, y2: B.y, color, width: toolState.width });
+        ed.sel = { kind: 'item', i: p.items.length - 1 };
+        ed.changed = true;
+      }
     } else {
-      ed.selMask = -1;   // 빈 곳을 톡 누름 → 선택 풀기
+      const r = { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), w: Math.abs(end.x - start.x), h: Math.abs(end.y - start.y) };
+      if (r.w > MIN_W && r.h > MIN_H) {
+        // 새로 그린 것은 바로 선택해 두어 곧바로 옮기거나 크기를 고칠 수 있게
+        if (tool === 'mask') {
+          p.masks.push({ ...toBase(r, p.rot), color });
+          ed.sel = { kind: 'mask', i: p.masks.length - 1 };
+        } else {
+          p.items.push({ type: tool, ...toBase(r, p.rot), color, width: toolState.width });
+          ed.sel = { kind: 'item', i: p.items.length - 1 };
+        }
+        ed.changed = true;
+      }
     }
   } else if (d.moved) {
     ed.changed = true;
   }
-  drawEditorMasks();
+  drawEditorLayer();
 }
 ed.layer.addEventListener('pointerup', endDrag);
 ed.layer.addEventListener('pointercancel', endDrag);
 
-// ---- 색 고르기 ----
-function setMaskColor(color, applyToSelected = true) {
-  maskColor = color;
-  for (const b of document.querySelectorAll('.swatch')) {
-    b.classList.toggle('on', b.dataset.color === color);
-  }
-  // 선택한 상자가 있으면 그 상자의 색도 바꾼다
-  if (applyToSelected && ed.selMask >= 0) {
-    state.pages[ed.pos].masks[ed.selMask].color = color;
-    ed.changed = true;
-    drawEditorMasks();
-  }
-}
-for (const b of document.querySelectorAll('.swatch')) {
-  b.addEventListener('click', () => setMaskColor(b.dataset.color));
+// 글씨 넣기: 누른 곳이 글씨 상자의 왼쪽 위가 된다
+function addTextAt(pt) {
+  const text = prompt('넣을 글씨를 입력하세요. (줄을 바꾸려면 \\n 을 쓰세요)');
+  if (text === null || !text.trim()) { drawEditorLayer(); return; }
+  const p = state.pages[ed.pos];
+  const A = ptToBase(pt.x, pt.y, p.rot);
+  p.items.push({
+    type: 'text', x: A.x, y: A.y, rot0: p.rot,
+    size: toolState.size, color: toolState.color.text, bold: toolState.bold, text: text.replace(/\\n/g, '\n'),
+  });
+  ed.sel = { kind: 'item', i: p.items.length - 1 };
+  ed.changed = true;
+  drawEditorLayer();
 }
 
-// ---- 버튼들 ----
+// ---- 아래 버튼들 ----
 ed.delSel.addEventListener('click', () => {
-  if (ed.selMask < 0) return;
-  state.pages[ed.pos].masks.splice(ed.selMask, 1);
-  ed.selMask = -1;
+  if (!ed.sel) return;
+  const p = state.pages[ed.pos];
+  (ed.sel.kind === 'mask' ? p.masks : p.items).splice(ed.sel.i, 1);
+  ed.sel = null;
   ed.changed = true;
-  drawEditorMasks();
+  drawEditorLayer();
 });
 ed.clear.addEventListener('click', () => {
   const p = state.pages[ed.pos];
-  if (!p.masks.length || !confirm('이 쪽의 가림 상자를 모두 지울까요?')) return;
+  if (!(p.masks.length + p.items.length) || !confirm('이 쪽의 가림 상자와 글씨·도형을 모두 지울까요?')) return;
   p.masks = [];
-  ed.selMask = -1;
+  p.items = [];
+  ed.sel = null;
   ed.changed = true;
-  drawEditorMasks();
+  drawEditorLayer();
 });
 ed.prev.addEventListener('click', () => ed.pos > 0 && showEditorPage(ed.pos - 1));
 ed.next.addEventListener('click', () => ed.pos < state.pages.length - 1 && showEditorPage(ed.pos + 1));
@@ -893,7 +1261,7 @@ ed.done.addEventListener('click', closeEditor);
 document.addEventListener('keydown', (e) => {
   if (ed.root.hidden) return;
   if (e.key === 'Escape') closeEditor();
-  if ((e.key === 'Delete' || e.key === 'Backspace') && ed.selMask >= 0) ed.delSel.click();
+  if ((e.key === 'Delete' || e.key === 'Backspace') && ed.sel) ed.delSel.click();
 });
 // 휴대폰을 돌리거나 창 크기가 바뀌면 다시 맞춘다
 window.addEventListener('resize', () => { if (!ed.root.hidden) showEditorPage(ed.pos); });
@@ -957,7 +1325,7 @@ let session = null;
 function newSession(fileName, pages) {
   return {
     fileName,
-    pages: pages.map((p) => ({ ...p, masks: p.masks.map((m) => ({ ...m })) })), // 저장 시점 모습 고정
+    pages: pages.map(copyPage), // 저장 시점 모습 고정
     srcs: new Map(),     // 파일id → pdf-lib 문서 (편집 제한이면 null)
     imgBytes: new Map(), // 페이지 key → 그 페이지 속 그림 용량
     jpgs: new Map(),     // 그림으로 바꾼 결과 기억 (같은 설정이면 다시 그리지 않음)
@@ -1239,7 +1607,10 @@ async function buildPdf(pages, fileName, level = 0, onProgress = () => {}) {
     list.forEach((x, i) => copied.set(x.p.key, got[i]));
   }
 
-  // 4) 화면 순서대로 붙이기 + 회전
+  // 글씨가 있으면 한글 글꼴 준비
+  const fonts = await embedFonts(out, pages);
+
+  // 4) 화면 순서대로 붙이기 + 글씨·도형 그리기 + 회전
   const redacted = [];
   const pageSizes = [];
   for (const [i, x] of plans.entries()) {
@@ -1247,13 +1618,27 @@ async function buildPdf(pages, fileName, level = 0, onProgress = () => {}) {
     if (x.mode === 'copy') {
       page = out.addPage(copied.get(x.p.key));
       pageSizes.push(imageBytesOf(s, s.srcs.get(x.p.fileId), x.p) + 20_000);
+      if (x.p.items.length) {
+        // 원본 페이지 좌표: PDF.js가 화면 위치 → PDF 좌표 변환을 해 준다 (원래 회전 R 포함)
+        const pg = await x.file.pdf.getPage(x.p.index + 1);
+        const vp = pg.getViewport({ scale: 1 });
+        const g = (nx, ny) => vp.convertToPdfPoint(nx * vp.width, ny * vp.height);
+        drawItemsPdf(page, x.p.items, g, vp.width, vp.height, pg.rotate, fonts);
+      }
     } else {
       const img = await out.embedJpg(x.jpg.bytes);
       page = out.addPage([x.jpg.w, x.jpg.h]);
       page.drawImage(img, { x: 0, y: 0, width: x.jpg.w, height: x.jpg.h });
       pageSizes.push(x.jpg.bytes.length + 2_000);
+      // 그림으로 바꾼 쪽: 왼쪽 아래가 (0,0)인 새 페이지
+      const W = x.jpg.w, H = x.jpg.h;
+      drawItemsPdf(page, x.p.items, (nx, ny) => [nx * W, H - ny * H], W, H, 0, fonts);
       if (x.p.masks.length) {
-        redacted.push({ outIndex: i, hidden: await hiddenTextsOf(x.file, x.p.index, x.p.masks) });
+        redacted.push({
+          outIndex: i,
+          hidden: await hiddenTextsOf(x.file, x.p.index, x.p.masks),
+          allowed: x.p.items.filter((t) => t.type === 'text').map((t) => t.text),   // 사용자가 넣은 글씨는 검사에서 뺀다
+        });
       }
     }
     if (x.p.rot) page.setRotation(degrees((page.getRotation().angle + x.p.rot) % 360));
@@ -1270,6 +1655,131 @@ async function buildPdf(pages, fileName, level = 0, onProgress = () => {}) {
 
   const bytes = await out.save({ useObjectStreams: true });
   return { bytes, level, imagedFiles, redacted, pageSizes, compressedCount, rasterCount, pageCount: pages.length };
+}
+
+// ---------------------------------------------------------------------
+// 글씨·도형을 저장 파일에 넣기 (4단계-②)
+//  - 원본을 복사한 쪽: PDF 안에 벡터로 그린다 → 확대해도 선명하고 글씨도 선택된다
+//  - 그림으로 바꾼 쪽(가린 쪽 등): 그림 위에 같은 방법으로 그린다
+// ---------------------------------------------------------------------
+async function loadFontkit() {
+  if (window.fontkit) return;
+  await new Promise((ok, fail) => {
+    const sc = document.createElement('script');
+    sc.src = 'lib/fontkit/fontkit.umd.min.js';     // 같은 웹앱 폴더에서만 불러온다
+    sc.onload = ok;
+    sc.onerror = () => fail(new Error('글꼴 도구를 불러오지 못했습니다'));
+    document.head.appendChild(sc);
+  });
+}
+
+const fontFiles = {};
+async function fontBytes(bold) {
+  const name = bold ? 'NanumGothic-Bold.ttf' : 'NanumGothic-Regular.ttf';
+  fontFiles[name] ||= new Uint8Array(await (await fetch('lib/fonts/' + name)).arrayBuffer());
+  return fontFiles[name];
+}
+
+// 이 PDF에 필요한 글꼴을 넣는다.
+//  ※ '쓴 글자만 골라 넣기(subset)'를 하면 나눔고딕의 한글이 빈칸으로 나와서(조합형 글자 조각이 빠짐)
+//     글꼴 전체를 넣는다. 글씨가 있는 PDF는 약 0.75MB(굵게도 쓰면 +0.75MB) 커진다.
+async function embedFonts(out, pages) {
+  const texts = pages.flatMap((p) => p.items.filter((it) => it.type === 'text'));
+  if (!texts.length) return null;
+  await loadFontkit();
+  out.registerFontkit(window.fontkit);
+  const fonts = {};
+  if (texts.some((t) => !t.bold)) fonts.regular = await out.embedFont(await fontBytes(false), { subset: false });
+  if (texts.some((t) => t.bold)) fonts.bold = await out.embedFont(await fontBytes(true), { subset: false });
+  return fonts;
+}
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return window.PDFLib.rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+}
+
+// g(비율x, 비율y) → PDF 좌표 [x, y],  W·H = 돌리기 전 페이지 크기(pt),  R = 원래 페이지 회전
+function drawItemsPdf(page, items, g, W, H, R, fonts) {
+  const { degrees, LineCapStyle } = window.PDFLib;
+  for (const it of items) {
+    const color = hexToRgb(it.color);
+    if (it.type === 'rect' || it.type === 'ellipse' || it.type === 'highlight') {
+      const [ax, ay] = g(it.x, it.y);
+      const [bx, by] = g(it.x + it.w, it.y + it.h);
+      const x = Math.min(ax, bx), y = Math.min(ay, by), w = Math.abs(ax - bx), h = Math.abs(ay - by);
+      if (it.type === 'rect') {
+        page.drawRectangle({ x, y, width: w, height: h, borderColor: color, borderWidth: it.width });
+      } else if (it.type === 'ellipse') {
+        page.drawEllipse({ x: x + w / 2, y: y + h / 2, xScale: w / 2, yScale: h / 2, borderColor: color, borderWidth: it.width });
+      } else {
+        page.drawRectangle({ x, y, width: w, height: h, color, opacity: HL_OPACITY, borderWidth: 0 });
+      }
+    } else if (it.type === 'line' || it.type === 'arrow') {
+      const [x1, y1] = g(it.x1, it.y1);
+      const [x2, y2] = g(it.x2, it.y2);
+      const line = (sx, sy, ex, ey) => page.drawLine({
+        start: { x: sx, y: sy }, end: { x: ex, y: ey }, thickness: it.width, color, lineCap: LineCapStyle.Round,
+      });
+      line(x1, y1, x2, y2);
+      if (it.type === 'arrow') for (const [hx, hy] of arrowHead(x1, y1, x2, y2, it.width)) line(x2, y2, hx, hy);
+    } else if (it.type === 'text' && fonts) {
+      const font = it.bold ? fonts.bold : fonts.regular;
+      // 돌리기 전 기준에서 글씨의 '아래쪽' 방향 (글씨를 넣을 때 화면에서 똑바로 보이도록 rot0만큼 기울어 있음)
+      const th = (-it.rot0 * Math.PI) / 180;
+      const downX = -Math.sin(th), downY = Math.cos(th);
+      it.text.split('\n').forEach((lineText, k) => {
+        const off = it.size * (TEXT_ASC + k * TEXT_LH);          // 줄의 기준선까지 거리(pt)
+        const px = it.x * W + downX * off, py = it.y * H + downY * off;
+        const [x, y] = g(px / W, py / H);
+        page.drawText(lineText, { x, y, size: it.size, font, color, rotate: degrees(it.rot0 + R) });
+      });
+    }
+  }
+}
+
+// 화면 기준 캔버스에 글씨·도형 그리기 (이미지로 저장할 때)
+//  scale = 캔버스 픽셀 / pt
+function drawItemsCanvas(ctx, p, scale) {
+  const bs = baseSize(p);
+  const dims = p.rot % 180 ? { w: bs.h, h: bs.w } : bs;
+  const X = (v) => v * dims.w * scale, Y = (v) => v * dims.h * scale;
+  for (const it of p.items) {
+    ctx.save();
+    ctx.strokeStyle = ctx.fillStyle = it.color;
+    ctx.lineWidth = (it.width || 1) * scale;
+    ctx.lineCap = 'round';
+    if (it.type === 'rect' || it.type === 'ellipse' || it.type === 'highlight') {
+      const r = toDisplay(it, p.rot);
+      if (it.type === 'rect') ctx.strokeRect(X(r.x), Y(r.y), X(r.w), Y(r.h));
+      else if (it.type === 'ellipse') {
+        ctx.beginPath();
+        ctx.ellipse(X(r.x + r.w / 2), Y(r.y + r.h / 2), X(r.w / 2), Y(r.h / 2), 0, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.globalAlpha = HL_OPACITY;
+        ctx.fillRect(X(r.x), Y(r.y), X(r.w), Y(r.h));
+      }
+    } else if (it.type === 'line' || it.type === 'arrow') {
+      const a = ptToDisplay(it.x1, it.y1, p.rot), b = ptToDisplay(it.x2, it.y2, p.rot);
+      const segs = [[X(a.x), Y(a.y), X(b.x), Y(b.y)]];
+      if (it.type === 'arrow') {
+        for (const [hx, hy] of arrowHead(a.x * dims.w, a.y * dims.h, b.x * dims.w, b.y * dims.h, it.width)) {
+          segs.push([X(b.x), Y(b.y), hx * scale, hy * scale]);
+        }
+      }
+      ctx.beginPath();
+      for (const [sx, sy, ex, ey] of segs) { ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); }
+      ctx.stroke();
+    } else if (it.type === 'text') {
+      const gm = textDisplayGeom(it, p);
+      ctx.translate(gm.ax * scale, gm.ay * scale);
+      ctx.rotate((gm.ang * Math.PI) / 180);
+      ctx.font = `${it.bold ? 700 : 400} ${it.size * scale}px ${TEXT_FONT}`;
+      gm.box.lines.forEach((line, k) => ctx.fillText(line, 0, it.size * (TEXT_ASC + k * TEXT_LH) * scale));
+    }
+    ctx.restore();
+  }
 }
 
 // 페이지 속 그림(사진·스캔)들의 용량 합계 (pdf-lib로 원본 구조를 들여다본다)
@@ -1392,7 +1902,11 @@ async function verifyRedaction(bytes, redacted) {
     }
 
     // ① 가린 쪽에 글자 정보가 남았는가
-    const textLeft = redacted.filter((r) => squash(texts[r.outIndex]).length > 0);
+    const textLeft = redacted.filter((r) => {
+      let left = squash(texts[r.outIndex]);
+      for (const a of r.allowed || []) left = left.split(squash(a)).join('');   // 사용자가 직접 넣은 글씨는 제외
+      return left.length > 0;
+    });
 
     // ② 가린 글자가 다른 쪽에 남아 있는가 (두 글자 이상만 검사)
     const elsewhere = [];
@@ -1513,6 +2027,13 @@ async function pageImage(p, fmt, dpi) {
     const x0 = Math.floor(r.x * canvas.width) - 1, y0 = Math.floor(r.y * canvas.height) - 1;
     const x1 = Math.ceil((r.x + r.w) * canvas.width) + 1, y1 = Math.ceil((r.y + r.h) * canvas.height) + 1;
     ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+
+  // 글씨·도형 그리기 (글꼴이 준비된 뒤에)
+  if (p.items.length) {
+    await ensureSize(p);
+    try { await Promise.all([document.fonts.load(`400 16px ${TEXT_FONT}`), document.fonts.load(`700 16px ${TEXT_FONT}`)]); } catch { /* 계속 */ }
+    drawItemsCanvas(ctx, p, dpi / 72);
   }
 
   const type = fmt === 'png' ? 'image/png' : 'image/jpeg';
