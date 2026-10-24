@@ -51,6 +51,10 @@ const els = {
   clearBtn: $('clearBtn'),
   pagesCard: $('pagesCard'),
   pageGrid: $('pageGrid'),
+  pageMsg: $('pageMsg'),
+  selectAllBtn: $('selectAllBtn'),
+  toolbar: $('toolbar'),
+  selCount: $('selCount'),
 };
 
 // =====================================================================
@@ -147,7 +151,7 @@ async function addFiles(fileList) {
         pageCount: pdf.numPages,
       });
       for (let i = 0; i < pdf.numPages; i++) {
-        state.pages.push({ fileId: id, index: i });
+        state.pages.push({ fileId: id, index: i, key: `${id}:${i}`, rot: 0 });
       }
       added++;
     } catch (err) {
@@ -155,6 +159,7 @@ async function addFiles(fileList) {
     }
   }
 
+  resetPageEdits();
   render();
 
   if (problems.length) {
@@ -280,6 +285,7 @@ function moveFile(id, dir) {
     .sort((a, b) => order.get(a.p.fileId) - order.get(b.p.fileId) || a.i - b.i)
     .map((x) => x.p);
 
+  resetPageEdits();
   render();
   // 옮긴 파일이 화면에서 눈에 띄도록 잠깐 강조한다
   const li = els.fileList.querySelector(`li[data-id="${id}"]`);
@@ -295,6 +301,7 @@ function removeFile(id) {
   forgetFile(file);
   state.files = state.files.filter((f) => f.id !== id);
   state.pages = state.pages.filter((p) => p.fileId !== id);
+  resetPageEdits();
   render();
   showMsg(`"${file.name}" 파일을 뺐습니다.`);
 }
@@ -305,6 +312,7 @@ els.clearBtn.addEventListener('click', () => {
   state.files.forEach(forgetFile);
   state.files = [];
   state.pages = [];
+  resetPageEdits();
   render();
   showMsg('');
 });
@@ -326,6 +334,12 @@ function forgetFile(file) {
 function tagOf(file) {
   const n = state.files.indexOf(file);
   return `<span class="file-tag c${n % 6}">${fileLabel(n)}</span>`;
+}
+
+// 파일의 쪽수 표시: 일부 페이지를 지웠으면 '사용 3/38쪽'
+function usedPages(f) {
+  const used = state.pages.filter((p) => p.fileId === f.id).length;
+  return used === f.pageCount ? `${f.pageCount}쪽` : `사용 ${used}/${f.pageCount}쪽`;
 }
 
 function render() {
@@ -351,7 +365,7 @@ function renderFiles() {
       ${tagOf(f)}
       <div class="file-info">
         <span class="file-name"></span>
-        <span class="file-meta">${f.fromImage ? '<span class="badge">사진→PDF</span> ' : ''}${f.pageCount}쪽 · ${formatSize(f.size)}</span>
+        <span class="file-meta">${f.fromImage ? '<span class="badge">사진→PDF</span> ' : ''}${usedPages(f)} · ${formatSize(f.size)}</span>
       </div>
       <div class="file-btns">
         <button type="button" class="icon-btn" data-act="up" data-id="${f.id}" ${i === 0 ? 'disabled' : ''} aria-label="위로">▲</button>
@@ -375,53 +389,210 @@ const observer = new IntersectionObserver((entries) => {
 }, { rootMargin: '300px' });   // 화면에 들어오기 조금 전에 미리 그리기 시작
 
 // 한 번 그린 미리보기는 기억해 두었다가 다시 쓴다(순서를 바꿀 때 다시 그리지 않도록)
-const thumbCache = new Map();   // '파일id:페이지번호' → canvas
+// 열쇠: '파일id:페이지번호@회전각도' → canvas
+const thumbCache = new Map();
+const thumbKey = (p) => `${p.key}@${p.rot}`;
 
 function renderPages() {
   const has = state.pages.length > 0;
   els.pagesCard.hidden = !has;
   observer.disconnect();
   els.pageGrid.innerHTML = '';
+  renderToolbar();
   if (!has) return;
 
   state.pages.forEach((p, order) => {
     const file = state.files.find((f) => f.id === p.fileId);
     const fig = document.createElement('figure');
-    fig.className = 'page';
+    fig.className = 'page' + (selected.has(p.key) ? ' selected' : '');
+    fig.dataset.key = p.key;
     fig.innerHTML = `
-      <div class="thumb" data-file="${p.fileId}" data-index="${p.index}"></div>
-      <figcaption>${tagOf(file)} ${order + 1}쪽</figcaption>`;
+      <div class="thumb" data-key="${p.key}">
+        <span class="check" aria-hidden="true">✓</span>
+      </div>
+      <figcaption>${tagOf(file)} ${order + 1}쪽${p.rot ? ` <span class="rot">↻${p.rot}°</span>` : ''}</figcaption>`;
     els.pageGrid.appendChild(fig);
 
     const box = fig.querySelector('.thumb');
-    const cached = thumbCache.get(`${p.fileId}:${p.index}`);
+    const cached = thumbCache.get(thumbKey(p));
     if (cached) box.appendChild(cached);
     else observer.observe(box);
   });
 }
 
-// 페이지 한 장을 작은 그림으로 그린다
+// 페이지 한 장을 작은 그림으로 그린다 (회전 반영)
 async function drawThumb(box) {
-  const file = state.files.find((f) => f.id === Number(box.dataset.file));
+  const p = state.pages.find((x) => x.key === box.dataset.key);
+  const file = p && state.files.find((f) => f.id === p.fileId);
   if (!file) return;
   try {
-    const page = await file.pdf.getPage(Number(box.dataset.index) + 1);
+    const page = await file.pdf.getPage(p.index + 1);
+    const rotation = (page.rotate + p.rot) % 360;   // 원래 회전 + 사용자가 돌린 각도
 
     // 썸네일 가로 크기를 약 220픽셀(선명하게 보이도록 화면 크기의 2배)에 맞춘다
-    const base = page.getViewport({ scale: 1 });
-    const viewport = page.getViewport({ scale: 220 / base.width });
+    const base = page.getViewport({ scale: 1, rotation });
+    const viewport = page.getViewport({ scale: 220 / base.width, rotation });
 
     const canvas = document.createElement('canvas');
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
 
     await page.render({ canvas, viewport }).promise;
-    thumbCache.set(`${box.dataset.file}:${box.dataset.index}`, canvas);
-    box.innerHTML = '';
+    thumbCache.set(thumbKey(p), canvas);
+    box.querySelector('canvas')?.remove();
     box.appendChild(canvas);
   } catch {
-    box.textContent = '미리보기 실패';
+    box.append('미리보기 실패');
   }
+}
+
+// =====================================================================
+// 5-1. 페이지 정리 (1단계-④): 선택 → 회전·이동·삭제, 되돌리기
+// =====================================================================
+
+const selected = new Set();   // 선택한 페이지들의 key
+const history = [];           // 되돌리기용: 바꾸기 전 페이지 목록을 쌓아 둔다
+const HISTORY_MAX = 30;
+
+// 페이지를 누르면 선택/해제
+els.pageGrid.addEventListener('click', (e) => {
+  const fig = e.target.closest('.page');
+  if (!fig) return;
+  const key = fig.dataset.key;
+  if (selected.has(key)) selected.delete(key);
+  else selected.add(key);
+  fig.classList.toggle('selected');
+  renderToolbar();
+});
+
+els.selectAllBtn.addEventListener('click', () => {
+  const all = selected.size === state.pages.length;
+  selected.clear();
+  if (!all) state.pages.forEach((p) => selected.add(p.key));
+  renderPages();
+});
+
+// 도구 막대 버튼
+els.toolbar.addEventListener('click', (e) => {
+  const act = e.target.closest('button[data-act]')?.dataset.act;
+  if (!act) return;
+  if (act === 'rotL') rotateSelected(-90);
+  if (act === 'rotR') rotateSelected(90);
+  if (act === 'prev') shiftSelected(-1);
+  if (act === 'next') shiftSelected(+1);
+  if (act === 'moveTo') moveSelectedTo();
+  if (act === 'delete') deleteSelected();
+  if (act === 'undo') undo();
+  if (act === 'clearSel') { selected.clear(); renderPages(); }
+});
+
+// 바꾸기 직전의 페이지 목록을 기록해 둔다 (페이지 객체도 복사: 회전값이 바뀌므로)
+function remember() {
+  history.push(state.pages.map((p) => ({ ...p })));
+  if (history.length > HISTORY_MAX) history.shift();
+}
+
+// 파일을 추가·삭제·이동하면 되돌리기 기록과 선택을 비운다(꼬이지 않도록)
+function resetPageEdits() {
+  history.length = 0;
+  selected.clear();
+}
+
+function undo() {
+  if (!history.length) return;
+  state.pages = history.pop();
+  for (const k of [...selected]) {
+    if (!state.pages.some((p) => p.key === k)) selected.delete(k);
+  }
+  render();
+  showPageMsg('되돌렸습니다.');
+}
+
+function rotateSelected(deg) {
+  if (!selected.size) return;
+  remember();
+  for (const p of state.pages) {
+    if (selected.has(p.key)) p.rot = (p.rot + deg + 360) % 360;
+  }
+  renderPages();
+}
+
+// 선택한 페이지를 한 칸 앞(-1) 또는 뒤(+1)로
+function shiftSelected(dir) {
+  if (!selected.size) return;
+  remember();
+  const a = state.pages;
+  const isSel = (i) => selected.has(a[i].key);
+  if (dir < 0) {
+    for (let i = 1; i < a.length; i++) {
+      if (isSel(i) && !isSel(i - 1)) [a[i - 1], a[i]] = [a[i], a[i - 1]];
+    }
+  } else {
+    for (let i = a.length - 2; i >= 0; i--) {
+      if (isSel(i) && !isSel(i + 1)) [a[i], a[i + 1]] = [a[i + 1], a[i]];
+    }
+  }
+  renderPages();
+  scrollToFirstSelected();
+}
+
+// 선택한 페이지를 원하는 위치(몇 쪽)로 한 번에 옮긴다
+function moveSelectedTo() {
+  if (!selected.size) return;
+  const total = state.pages.length;
+  const answer = prompt(`선택한 ${selected.size}쪽을 몇 쪽 자리로 옮길까요? (1~${total})\n예: 1 = 맨 앞, ${total} = 맨 뒤`);
+  if (answer === null) return;
+  const target = parseInt(answer, 10);
+  if (!(target >= 1 && target <= total)) {
+    showPageMsg(`1부터 ${total} 사이의 숫자를 입력해 주세요.`, 'bad');
+    return;
+  }
+  remember();
+  const moving = state.pages.filter((p) => selected.has(p.key));
+  const rest = state.pages.filter((p) => !selected.has(p.key));
+  const at = Math.min(target - 1, rest.length);
+  rest.splice(at, 0, ...moving);
+  state.pages = rest;
+  renderPages();
+  scrollToFirstSelected();
+  showPageMsg(`${moving.length}쪽을 ${at + 1}쪽 자리로 옮겼습니다.`);
+}
+
+function deleteSelected() {
+  if (!selected.size) return;
+  if (selected.size === state.pages.length) {
+    showPageMsg('모든 페이지를 지울 수는 없습니다. 파일을 빼려면 위의 ✕ 버튼을 쓰세요.', 'bad');
+    return;
+  }
+  remember();
+  const n = selected.size;
+  state.pages = state.pages.filter((p) => !selected.has(p.key));
+  selected.clear();
+  render();   // 파일 목록의 쪽수도 바뀌므로 전체를 다시 그린다
+  showPageMsg(`${n}쪽을 지웠습니다. 실수했다면 되돌리기를 누르세요.`);
+}
+
+function scrollToFirstSelected() {
+  els.pageGrid.querySelector('.page.selected')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function showPageMsg(text, type = 'ok') {
+  els.pageMsg.textContent = text;
+  els.pageMsg.className = 'msg ' + type;
+  els.pageMsg.hidden = !text;
+}
+
+// 아래 도구 막대: 선택한 페이지가 있거나 되돌릴 것이 있을 때만 보인다
+function renderToolbar() {
+  const n = selected.size;
+  els.toolbar.hidden = n === 0 && history.length === 0;
+  els.selCount.textContent = n ? `${n}쪽 선택` : '선택 없음';
+  for (const btn of els.toolbar.querySelectorAll('button[data-act]')) {
+    const act = btn.dataset.act;
+    btn.disabled = act === 'undo' ? history.length === 0 : n === 0;
+  }
+  els.selectAllBtn.textContent =
+    n > 0 && n === state.pages.length ? '선택 해제' : '전체 선택';
 }
 
 // =====================================================================

@@ -247,3 +247,78 @@ main { padding-top: 20px; padding-bottom: 20px; }
   font-size: 0.75rem;
   font-weight: 600;
 }
+
+/* ---------- 페이지 선택 ---------- */
+.page { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.thumb { position: relative; }
+.check {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--brand);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  display: none;
+  place-items: center;
+  z-index: 1;
+}
+.page.selected .thumb {
+  outline: 3px solid var(--brand);
+  outline-offset: -1px;
+  background: var(--brand-soft);
+}
+.page.selected .check { display: grid; }
+.page.selected canvas { opacity: 0.85; }
+.rot { color: var(--brand); font-weight: 600; }
+
+/* ---------- 아래 도구 막대 ---------- */
+.toolbar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.08);
+  z-index: 10;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.toolbar-inner { max-width: 960px; margin: 0 auto; padding: 8px 12px 10px; }
+.toolbar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 0.93rem;
+}
+.link-btn {
+  background: none; border: 0; padding: 4px;
+  color: var(--muted); font: inherit; font-size: 0.85rem;
+  text-decoration: underline; cursor: pointer;
+}
+.toolbar-btns {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.toolbar-btns button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.toolbar-btns button span { font-size: 1.1rem; }
+.toolbar-btns button:disabled { opacity: 0.3; cursor: default; }
+.toolbar-btns button.danger:not(:disabled) { color: var(--bad); border-color: #e7b4ab; }
+
+/* 도구 막대가 마지막 내용을 가리지 않도록 아래 여백 */
+body { padding-bottom: 120px; }

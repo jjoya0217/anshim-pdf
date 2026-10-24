@@ -24,7 +24,7 @@
   ">
 
   <title>안심 PDF 도구</title>
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <header class="top">
@@ -64,7 +64,12 @@
 
     <!-- 3. 페이지 미리보기 -->
     <section class="card" id="pagesCard" hidden>
-      <h2>페이지 미리보기</h2>
+      <div class="row-between">
+        <h2>페이지 정리</h2>
+        <button type="button" class="btn-ghost" id="selectAllBtn">전체 선택</button>
+      </div>
+      <p class="hint">페이지를 눌러 선택한 뒤, 아래 도구 막대로 회전·이동·삭제하세요.</p>
+      <p class="msg" id="pageMsg" hidden></p>
       <div class="page-grid" id="pageGrid"></div>
     </section>
 
@@ -80,12 +85,31 @@
     </section>
   </main>
 
+  <!-- 페이지를 선택하면 화면 아래에 나타나는 도구 막대 -->
+  <div class="toolbar" id="toolbar" hidden>
+    <div class="toolbar-inner">
+      <div class="toolbar-head">
+        <strong id="selCount">선택 없음</strong>
+        <button type="button" class="link-btn" data-act="clearSel">선택 해제</button>
+      </div>
+      <div class="toolbar-btns">
+        <button type="button" data-act="rotL"><span>↺</span>왼쪽</button>
+        <button type="button" data-act="rotR"><span>↻</span>오른쪽</button>
+        <button type="button" data-act="prev"><span>◀</span>앞으로</button>
+        <button type="button" data-act="next"><span>▶</span>뒤로</button>
+        <button type="button" data-act="moveTo"><span>#</span>위치로</button>
+        <button type="button" data-act="delete" class="danger"><span>🗑</span>삭제</button>
+        <button type="button" data-act="undo"><span>↶</span>되돌리기</button>
+      </div>
+    </div>
+  </div>
+
   <footer class="wrap foot">
     안심 PDF 도구 · 1단계 개발 중
   </footer>
 
   <!-- 라이브러리는 모두 이 웹앱 폴더(lib) 안에 들어 있다. 외부 CDN을 쓰지 않는다. -->
   <script src="lib/pdf-lib/pdf-lib.min.js"></script>
-  <script type="module" src="app.js?v=5"></script>
+  <script type="module" src="app.js?v=6"></script>
 </body>
 </html>
