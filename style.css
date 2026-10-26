@@ -712,3 +712,45 @@ body { padding-bottom: 170px; }
 .item-hit.text-hit::before { content: ''; position: absolute; inset: -14px -10px; }
 .item-hit.text-hit.sel { outline-offset: 4px; }
 .item-hit.text-hit .handle.se { right: -30px; bottom: -30px; z-index: 1; }
+
+/* ---------- 페이지 끌어서 옮기기 ---------- */
+.page-grid { position: relative; }
+.page {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;   /* 아이폰: 길게 누를 때 뜨는 메뉴 막기 */
+}
+.page.dragging { opacity: 0.35; }
+body.page-dragging { cursor: grabbing; user-select: none; }
+.drag-ghost {
+  position: fixed;
+  left: 0; top: 0;
+  width: 80px;
+  z-index: 100;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  border: 2px solid var(--brand);
+  border-radius: 6px;
+  background: #fff;
+  transform-origin: top left;
+}
+.drag-ghost canvas { display: block; width: 100%; height: auto; border-radius: 4px; }
+.drag-count {
+  position: absolute;
+  top: -10px; right: -10px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.drop-bar {
+  position: absolute;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+  pointer-events: none;
+  z-index: 2;
+}

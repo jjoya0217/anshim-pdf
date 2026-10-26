@@ -482,13 +482,218 @@ const HISTORY_MAX = 30;
 // 페이지를 누르면 선택/해제
 els.pageGrid.addEventListener('click', (e) => {
   const fig = e.target.closest('.page');
-  if (!fig) return;
+  if (!fig || pageDrag.justDropped) return;   // 끌어서 옮긴 직후의 클릭은 선택으로 치지 않는다
   const key = fig.dataset.key;
   if (selected.has(key)) selected.delete(key);
   else selected.add(key);
   fig.classList.toggle('selected');
   renderToolbar();
 });
+
+// ---------------------------------------------------------------------
+// 페이지 끌어서 옮기기 (드래그 앤 드롭)
+//  - 마우스: 누른 채 6px 이상 움직이면 끌기 시작 (짧게 클릭하면 선택)
+//  - 손가락: 0.4초 길게 누르면 집어 들기 (그냥 끌면 화면 스크롤)
+//  - 선택한 여러 쪽 중 하나를 끌면 선택한 쪽들이 함께 움직인다
+// ---------------------------------------------------------------------
+const pageDrag = {
+  state: null,        // null | 'pending' | 'dragging'
+  key: null,          // 집어 든 페이지
+  keys: [],           // 함께 옮길 페이지들
+  startX: 0, startY: 0,
+  timer: 0,
+  ghost: null,
+  bar: null,
+  target: -1,         // 놓을 자리 (state.pages에서 이 번호 앞에 넣음)
+  lastX: 0, lastY: 0,
+  scrollRaf: 0,
+  justDropped: false, // 끌기 직후 생기는 click(선택 토글)을 무시하기 위해
+};
+
+els.pageGrid.addEventListener('pointerdown', (e) => {
+  const fig = e.target.closest('.page');
+  if (!fig || e.button > 0) return;
+  pageDrag.state = 'pending';
+  pageDrag.key = fig.dataset.key;
+  pageDrag.startX = pageDrag.lastX = e.clientX;
+  pageDrag.startY = pageDrag.lastY = e.clientY;
+  pageDrag.pointerId = e.pointerId;
+  pageDrag.touch = e.pointerType !== 'mouse';
+  if (pageDrag.touch) {
+    // 손가락: 길게 누르면 시작
+    pageDrag.timer = setTimeout(() => {
+      if (pageDrag.state === 'pending') startPageDrag(fig);
+    }, 400);
+  }
+});
+
+window.addEventListener('pointermove', (e) => {
+  if (!pageDrag.state || e.pointerId !== pageDrag.pointerId) return;
+  pageDrag.lastX = e.clientX;
+  pageDrag.lastY = e.clientY;
+  const moved = Math.hypot(e.clientX - pageDrag.startX, e.clientY - pageDrag.startY);
+  if (pageDrag.state === 'pending') {
+    if (pageDrag.touch) {
+      // 길게 누르기 전에 손가락이 움직이면 → 스크롤하려는 것이므로 취소
+      if (moved > 10) cancelPageDrag();
+      return;
+    }
+    if (moved < 6) return;
+    const fig = els.pageGrid.querySelector(`.page[data-key="${CSS.escape(pageDrag.key)}"]`);
+    if (!fig) return cancelPageDrag();
+    startPageDrag(fig);
+  }
+  if (pageDrag.state === 'dragging') {
+    e.preventDefault();
+    moveGhost(e.clientX, e.clientY);
+    updateDropTarget(e.clientX, e.clientY);
+  }
+}, { passive: false });
+
+window.addEventListener('pointerup', (e) => {
+  if (!pageDrag.state || e.pointerId !== pageDrag.pointerId) return;
+  if (pageDrag.state === 'dragging') finishPageDrag();
+  else cancelPageDrag();
+});
+window.addEventListener('pointercancel', () => {
+  if (pageDrag.state === 'dragging') finishPageDrag(false);
+  else cancelPageDrag();
+});
+
+// 휴대폰: 끄는 동안 화면이 스크롤되거나 길게 누르기 메뉴가 뜨지 않게
+els.pageGrid.addEventListener('touchmove', (e) => {
+  if (pageDrag.state === 'dragging') e.preventDefault();
+}, { passive: false });
+els.pageGrid.addEventListener('contextmenu', (e) => {
+  if (pageDrag.state) e.preventDefault();
+});
+
+function startPageDrag(fig) {
+  clearTimeout(pageDrag.timer);
+  pageDrag.state = 'dragging';
+  // 집어 든 쪽이 선택된 쪽이면 선택한 쪽 전부, 아니면 그 쪽 하나만
+  pageDrag.keys = selected.has(pageDrag.key)
+    ? state.pages.filter((p) => selected.has(p.key)).map((p) => p.key)
+    : [pageDrag.key];
+  for (const k of pageDrag.keys) {
+    els.pageGrid.querySelector(`.page[data-key="${CSS.escape(k)}"]`)?.classList.add('dragging');
+  }
+  document.body.classList.add('page-dragging');
+  navigator.vibrate?.(20);   // 휴대폰: 집어 들었다는 느낌 (지원하는 기기만)
+
+  // 손가락을 따라다니는 작은 미리보기
+  const ghost = document.createElement('div');
+  ghost.className = 'drag-ghost';
+  const src = fig.querySelector('canvas');
+  if (src) {
+    const c = document.createElement('canvas');
+    c.width = src.width;
+    c.height = src.height;
+    c.getContext('2d').drawImage(src, 0, 0);
+    ghost.appendChild(c);
+  }
+  if (pageDrag.keys.length > 1) {
+    const badge = document.createElement('span');
+    badge.className = 'drag-count';
+    badge.textContent = `${pageDrag.keys.length}쪽`;
+    ghost.appendChild(badge);
+  }
+  document.body.appendChild(ghost);
+  pageDrag.ghost = ghost;
+
+  // 놓일 자리 표시 막대
+  const bar = document.createElement('div');
+  bar.className = 'drop-bar';
+  els.pageGrid.appendChild(bar);
+  pageDrag.bar = bar;
+
+  moveGhost(pageDrag.lastX, pageDrag.lastY);
+  updateDropTarget(pageDrag.lastX, pageDrag.lastY);
+  autoScroll();
+}
+
+function moveGhost(x, y) {
+  pageDrag.ghost.style.transform = `translate(${x - 40}px, ${y - 50}px)`;
+}
+
+// 손가락 위치에서 가장 가까운 페이지를 찾아, 그 앞 또는 뒤를 놓을 자리로 정한다
+function updateDropTarget(x, y) {
+  const figs = [...els.pageGrid.querySelectorAll('.page')];
+  if (!figs.length) return;
+  let best = null, bestD = Infinity;
+  for (const [i, f] of figs.entries()) {
+    const r = f.getBoundingClientRect();
+    const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+    const dy = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+    const d = dx * dx + dy * dy * 4;   // 같은 줄을 우선
+    if (d < bestD) { bestD = d; best = { i, r }; }
+  }
+  const after = x > best.r.left + best.r.width / 2;
+  pageDrag.target = best.i + (after ? 1 : 0);
+
+  // 막대 위치: 그 페이지의 왼쪽 또는 오른쪽 틈
+  const g = els.pageGrid.getBoundingClientRect();
+  const gap = 12;
+  const left = (after ? best.r.right + gap / 2 : best.r.left - gap / 2) - g.left;
+  Object.assign(pageDrag.bar.style, {
+    left: left - 2 + 'px',
+    top: best.r.top - g.top + 'px',
+    height: best.r.height * 0.8 + 'px',
+  });
+}
+
+// 화면 위·아래 끝 가까이 가면 자동으로 스크롤
+function autoScroll() {
+  if (pageDrag.state !== 'dragging') return;
+  const edge = 70, y = pageDrag.lastY, h = window.innerHeight;
+  const bottomLimit = h - (els.toolbar.hidden ? 0 : els.toolbar.offsetHeight);
+  let dy = 0;
+  if (y < edge) dy = -Math.ceil((edge - y) / 5);
+  else if (y > bottomLimit - edge) dy = Math.ceil((y - (bottomLimit - edge)) / 5);
+  if (dy) {
+    window.scrollBy(0, dy);
+    updateDropTarget(pageDrag.lastX, pageDrag.lastY);
+  }
+  pageDrag.scrollRaf = requestAnimationFrame(autoScroll);
+}
+
+function finishPageDrag(apply = true) {
+  const keys = new Set(pageDrag.keys);
+  const target = pageDrag.target;
+  cleanupPageDrag();
+  pageDrag.justDropped = true;
+  setTimeout(() => { pageDrag.justDropped = false; }, 50);
+  if (!apply || target < 0) return;
+
+  // target은 '옮기기 전' 목록 기준 → 옮길 쪽을 뺀 목록에서의 자리로 바꾼다
+  const before = state.pages.slice(0, target).filter((p) => !keys.has(p.key)).length;
+  const moving = state.pages.filter((p) => keys.has(p.key));
+  const rest = state.pages.filter((p) => !keys.has(p.key));
+  const next = [...rest.slice(0, before), ...moving, ...rest.slice(before)];
+  if (next.every((p, i) => p === state.pages[i])) return;   // 제자리면 아무것도 안 함
+
+  remember();
+  state.pages = next;
+  renderPages();
+  const from = next.indexOf(moving[0]) + 1;
+  showPageMsg(moving.length > 1
+    ? `${moving.length}쪽을 ${from}쪽 자리로 옮겼습니다.`
+    : `${from}쪽 자리로 옮겼습니다. 실수했다면 되돌리기를 누르세요.`);
+}
+
+function cancelPageDrag() {
+  clearTimeout(pageDrag.timer);
+  cleanupPageDrag();
+}
+
+function cleanupPageDrag() {
+  cancelAnimationFrame(pageDrag.scrollRaf);
+  pageDrag.ghost?.remove();
+  pageDrag.bar?.remove();
+  for (const f of els.pageGrid.querySelectorAll('.page.dragging')) f.classList.remove('dragging');
+  document.body.classList.remove('page-dragging');
+  Object.assign(pageDrag, { state: null, ghost: null, bar: null, target: -1, keys: [] });
+}
 
 els.selectAllBtn.addEventListener('click', () => {
   const all = selected.size === state.pages.length;

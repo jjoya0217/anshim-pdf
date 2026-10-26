@@ -4,7 +4,7 @@
 // 하는 일: 웹앱 '프로그램 파일'을 브라우저에 보관해 두었다가, 인터넷이 없어도 쓸 수 있게 한다.
 // 하지 않는 일: 사용자가 불러온 PDF·사진은 절대 보관하지 않는다. (보관 목록은 아래 고정된 파일뿐)
 
-const VERSION = '7b39c6c54f10';
+const VERSION = '38269eff3c9d';
 const CACHE = 'anshim-pdf-' + VERSION;
 
 // 처음 접속할 때 바로 보관하는 핵심 파일
@@ -20,9 +20,9 @@ const CORE = [
   'lib/pdf-lib/pdf-lib.min.js',
   'lib/pdfjs/pdf.min.mjs',
   'lib/pdfjs/pdf.worker.min.mjs',
-  'style.css?v=17',
-  'app.js?v=17',
-  'page.js?v=17'
+  'style.css?v=18',
+  'app.js?v=18',
+  'page.js?v=18'
 ];
 // 이어서 뒤에서 보관하는 나머지 파일 (글꼴, 한글 문서 보조 자료 등)
 const REST = [
