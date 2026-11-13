@@ -60,6 +60,7 @@ const els = {
   saveCard: $('saveCard'),
   nameInput: $('nameInput'),
   saveBtn: $('saveBtn'),
+  saveTarget: $('saveTarget'),
   saveMsg: $('saveMsg'),
   savePanel: $('savePanel'),
   imgCard: $('imgCard'),
@@ -829,6 +830,7 @@ function renderToolbar() {
   }
   els.selectAllBtn.textContent =
     n > 0 && n === state.pages.length ? '선택 해제' : '전체 선택';
+  renderSave();
   renderImgCard();
 }
 
@@ -1560,6 +1562,16 @@ function renderSave() {
   els.saveCard.hidden = !has;
   if (!has) { nameTouched = false; return; }
   if (!nameTouched) els.nameInput.value = suggestName();
+  const n = selected.size;
+  els.saveTarget.textContent = n
+    ? `선택한 ${n}쪽만 PDF로 저장합니다.`
+    : `선택한 쪽이 없어 전체 ${state.pages.length}쪽을 저장합니다. (위에서 쪽을 누르면 그 쪽만 저장)`;
+  if (!els.saveBtn.disabled) els.saveBtn.textContent = saveBtnLabel();
+}
+
+function saveBtnLabel() {
+  const n = selected.size;
+  return n ? `선택한 ${n}쪽 PDF로 저장` : 'PDF로 저장';
 }
 
 // 파일 이름 다듬기: 쓸 수 없는 글자 → _, 끝의 .pdf 중복 제거, 너무 길면 자르기
@@ -1609,7 +1621,8 @@ async function savePdf() {
   if (!state.pages.length) return;
   const fileName = cleanName(els.nameInput.value);
   els.nameInput.value = fileName.replace(/\.pdf$/, '');
-  session = newSession(fileName, state.pages);
+  // 선택한 쪽이 있으면 그 쪽만(화면 순서대로), 없으면 전체를 저장한다
+  session = newSession(fileName, exportTargets());
   hidePanel();
   showSaveMsg('');
   await busy(async () => {
@@ -1701,7 +1714,7 @@ async function busy(work) {
     showSaveMsg(`PDF를 만드는 중 문제가 생겼습니다. (${err?.message || err})`, 'bad');
   } finally {
     els.saveBtn.disabled = false;
-    els.saveBtn.textContent = 'PDF로 저장';
+    els.saveBtn.textContent = saveBtnLabel();
     for (const b of els.savePanel.querySelectorAll('button')) b.disabled = false;
   }
 }
